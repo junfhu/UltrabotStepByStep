@@ -431,7 +431,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from openai import OpenAI
-from ultrabot.tools.base import ToolRegistry
+from tools.base import ToolRegistry
 
 
 @dataclass
@@ -541,6 +541,7 @@ class Agent:
             # 执行工具并追加结果
             # （真实代码中的 agent.py 使用 asyncio.gather 并发执行）
             for tc in response.tool_calls:
+                print(f"\n[calls {tc.name}({tc.arguments})]")
                 result = asyncio.run(self._execute_tool(tc))
                 self._messages.append({
                     "role": "tool",

@@ -119,7 +119,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from ultrabot.tools.base import Tool, ToolRegistry
+from tools.base import Tool, ToolRegistry
 
 
 @dataclass
@@ -240,17 +240,8 @@ def register_default_toolsets(manager: ToolsetManager) -> None:
         manager.register_toolset(ts)
 ```
 
-### 步骤 3：打印工具调用信息
 
-更新 `agent.py`的 run() 里，在执行工具前加：
-```python
-for tc in response.tool_calls:
-    print(f"\n[calls {tc.name}({tc.arguments})]")
-    result = asyncio.run(self._execute_tool(tc))
-```    
-
-
-### 步骤 4：从命令行使用工具集
+### 步骤 3：从命令行使用工具集
 
 更新 `main.py` 以接受 `--tools` 参数：
 
