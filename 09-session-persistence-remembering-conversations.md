@@ -18,10 +18,16 @@
 - 使用 `asyncio.Lock` 实现异步安全的文件 I/O
 - 基于 TTL 的清理和 LRU 淘汰
 - 上下文窗口修剪（丢弃最旧的消息以控制在 token 预算之内）
+- 将会话管理接入智能体的工具循环（`Agent.run()` 的 async 改造）
+- 在 CLI 交互模式中接入会话持久化（启动恢复、每轮保存、`/clear` 清磁盘）
 
 **新建文件：**
 - `ultrabot/session/__init__.py` — 公共重导出
 - `ultrabot/session/manager.py` — `Session` 数据类和 `SessionManager`
+
+**修改文件：**
+- `ultrabot/agent.py` — 将 `SessionManager` 接入智能体，`run()` 改为 `async`
+- `ultrabot/cli/commands.py` — CLI 交互模式接入 `SessionManager`，实现跨重启记忆
 
 ### 步骤 1：Session 数据类
 
@@ -323,26 +329,290 @@ from ultrabot.session.manager import Session, SessionManager
 __all__ = ["Session", "SessionManager"]
 ```
 
-Agent 构造函数已经接受 `session_manager` 参数。在 `Agent.run()`
-方法中，我们调用 `session = await self._sessions.get_or_create(session_key)` 来
-加载历史记录，然后在每轮对话后调用 `session.trim(max_tokens=context_window)`：
+现在我们需要将 `SessionManager` 接入 `Agent`，让智能体真正用上会话持久化。
+这涉及对 `ultrabot/agent.py` 的四处修改。
+
+#### 8a. 新增 import
+
+在 `agent.py` 顶部添加 `Session` 和 `SessionManager` 的导入：
 
 ```python
-# 在 Agent.run() 内部 — 简化版
-session = await self._sessions.get_or_create(session_key)
-session.add_message({"role": "user", "content": user_message})
-
-# ... LLM 调用、工具循环 ...
-
-# 修剪以保持在上下文窗口内。
-context_window = getattr(self._config, "context_window", 128_000)
-session.trim(max_tokens=context_window)
+from ultrabot.session.manager import Session, SessionManager
 ```
+
+#### 8b. `__init__` — 接受 `sessions` 和 `context_window`
+
+构造函数新增两个可选参数。`self._messages` 保留为没有传入
+`SessionManager` 时的回退方案，保证向后兼容：
+
+```python
+def __init__(
+    self,
+    client: OpenAI,
+    model: str,
+    system_prompt: str = SYSTEM_PROMPT,
+    max_iterations: int = 10,
+    tool_registry: ToolRegistry | None = None,
+    sessions: SessionManager | None = None,        # 新增
+    context_window: int = 128_000,                  # 新增
+) -> None:
+    self._client = client
+    self._model = model
+    self._system_prompt = system_prompt
+    self._max_iterations = max_iterations
+    self._tools = tool_registry or ToolRegistry()
+    self._sessions = sessions                       # 新增
+    self._context_window = context_window            # 新增
+    # Fallback for callers that don't use SessionManager.
+    self._messages: list[dict[str, Any]] = [
+        {"role": "system", "content": self._system_prompt}
+    ]
+```
+
+#### 8c. `run()` — 改为 `async`，使用 Session 管理消息
+
+`run()` 需要变成 `async def`，因为 `SessionManager.get_or_create()` 和
+`.save()` 都是异步方法。新增 `session_key` 参数用于区分不同对话。
+
+整体结构分三段：**获取会话 → 工具循环 → 修剪 + 持久化**。
+
+```python
+async def run(
+    self,
+    user_message: str,
+    session_key: str = "default",
+    on_content_delta: Callable[[str], None] | None = None,
+) -> str:
+    # ── 获取/创建会话 ──
+    if self._sessions is not None:
+        session = await self._sessions.get_or_create(session_key)
+        # 首次使用时注入系统提示词。
+        if not session.messages:
+            session.add_message(
+                {"role": "system", "content": self._system_prompt}
+            )
+        messages = session.messages
+    else:
+        session = None
+        messages = self._messages
+
+    # 1. 追加用户消息（通过 session.add_message 自动更新 token_count）
+    if session is not None:
+        session.add_message({"role": "user", "content": user_message})
+    else:
+        messages.append({"role": "user", "content": user_message})
+
+    tool_defs = self._tools.get_definitions() or None
+
+    final_content = ""
+    for iteration in range(1, self._max_iterations + 1):
+        response = self._chat_stream(tool_defs, on_content_delta, messages)
+
+        # 构建助手消息 ...
+        assistant_msg: dict[str, Any] = {"role": "assistant"}
+        if response.content:
+            assistant_msg["content"] = response.content
+        if response.has_tool_calls:
+            assistant_msg["tool_calls"] = [...]       # 与之前相同
+        if not response.content and not response.has_tool_calls:
+            assistant_msg["content"] = ""
+
+        if session is not None:
+            session.add_message(assistant_msg)
+        else:
+            messages.append(assistant_msg)
+
+        if not response.has_tool_calls:
+            final_content = response.content or ""
+            break
+
+        # 执行工具并追加结果
+        for tc in response.tool_calls:
+            result = await self._execute_tool(tc)
+            tool_msg = {
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": result,
+            }
+            if session is not None:
+                session.add_message(tool_msg)
+            else:
+                messages.append(tool_msg)
+    else:
+        final_content = "I have reached the maximum number of tool iterations. ..."
+
+    # ── 修剪以保持在上下文窗口内 ──
+    if session is not None:
+        session.trim(max_tokens=self._context_window)
+        await self._sessions.save(session_key)
+
+    return final_content
+```
+
+关键改动：
+1. **`run()` 变为 `async`** — `SessionManager` 的方法都是异步的，工具执行也不再需要
+   `asyncio.run()` 包装，直接 `await self._execute_tool(tc)` 即可。
+2. **所有 `messages.append()` 都替换为 `session.add_message()`**（在有 session 时） —
+   这确保 `token_count` 实时更新，修剪决策才准确。
+3. **`_chat_stream()` 接受显式 `messages` 参数** — 不再默认读取 `self._messages`，
+   而是从 session 或回退列表中获取：
+   ```python
+   def _chat_stream(
+       self,
+       tools: list[dict] | None,
+       on_content_delta: Callable[[str], None] | None = None,
+       messages: list[dict[str, Any]] | None = None,
+   ) -> LLMResponse:
+       kwargs: dict[str, Any] = {
+           "model": self._model,
+           "messages": messages if messages is not None else self._messages,
+           "stream": True,
+       }
+       # ... 其余不变
+   ```
+4. **循环结束后先 `trim()` 再 `save()`** — 确保磁盘上存的永远是修剪过的版本，
+   不会因为保存了超长会话而下次启动时爆掉上下文窗口。
+
+#### 8d. `clear()` — 支持按 session_key 清除
+
+```python
+def clear(self, session_key: str | None = None) -> None:
+    """重置对话历史。"""
+    if session_key and self._sessions:
+        session = self._sessions._sessions.get(session_key)
+        if session:
+            session.clear()
+            session.add_message(
+                {"role": "system", "content": self._system_prompt}
+            )
+    else:
+        self._messages = [{"role": "system", "content": self._system_prompt}]
+```
+
+### 步骤 9：CLI 交互模式接入会话持久化
+
+`Agent.run()` 已经支持会话了，但 CLI 的交互式 REPL（`ultrabot/cli/commands.py`）
+还没有用上。原来的 `_interactive_loop` 每次启动都创建一个新的 `messages` 列表，
+退出即丢失 — 这就是"告诉它新名字，重启后就忘了"的根本原因。
+
+#### 9a. `_agent_async` — 创建 SessionManager 并传入
+
+在异步入口点中新增 `SessionManager`，把它连同 `context_window` 一起传给
+`_interactive_loop`：
+
+```python
+async def _agent_async(cfg_path, message, model):
+    from ultrabot.session.manager import SessionManager
+    # ... 加载配置、构建 provider、registry（与之前相同）...
+
+    # 构建会话管理器
+    sessions = SessionManager(
+        data_dir=_DEFAULT_WORKSPACE,           # ~/.ultrabot/
+        context_window_tokens=defaults.context_window_tokens,
+    )
+
+    # ... 单次模式不变 ...
+
+    # 交互模式 — 把 sessions 传进去
+    await _interactive_loop(
+        provider, registry, defaults.model,
+        sessions=sessions,
+        context_window=defaults.context_window_tokens,
+    )
+```
+
+#### 9b. `_interactive_loop` — 加载/保存/修剪会话
+
+函数签名新增 `sessions` 和 `context_window` 参数。核心改动：
+
+```python
+async def _interactive_loop(
+    provider, registry, model,
+    sessions=None, context_window=128_000,
+):
+    SYSTEM_MSG = {"role": "system", "content": "You are UltraBot, a helpful assistant."}
+    SESSION_KEY = "cli:interactive"
+
+    # ── 启动时：加载或创建会话 ──
+    if sessions is not None:
+        session = await sessions.get_or_create(SESSION_KEY)
+        if not session.messages:
+            session.add_message(SYSTEM_MSG)
+        messages = session.messages
+        if len(messages) > 1:
+            console.print(
+                f"[dim]Restored {len(messages) - 1} message(s) "
+                f"from previous session.[/dim]"
+            )
+    else:
+        session = None
+        messages = [SYSTEM_MSG]
+```
+
+启动时如果 `~/.ultrabot/sessions/cli:interactive.json` 存在，
+`get_or_create` 会从磁盘加载它，用户会看到 "Restored N message(s)" 的提示。
+
+在 REPL 主循环中，每条用户消息和助手回复都通过 `session.add_message()` 写入
+（而不是 `messages.append()`），这样 `token_count` 始终准确：
+
+```python
+        # -- 普通消息 --
+        if session is not None:
+            session.add_message({"role": "user", "content": text})
+        else:
+            messages.append({"role": "user", "content": text})
+
+        # ... 调用 LLM、流式渲染 ...
+
+        # 将助手响应追加到历史记录
+        assistant_msg = {"role": "assistant", "content": response.content or full_text}
+        if session is not None:
+            session.add_message(assistant_msg)
+            session.trim(max_tokens=context_window)   # 修剪旧消息
+            await sessions.save(SESSION_KEY)           # 持久化到磁盘
+        else:
+            messages.append(assistant_msg)
+```
+
+每轮对话结束后先 `trim()` 再 `save()`，确保磁盘上永远是修剪过的版本。
+
+#### 9c. `/clear` 命令 — 同时清除磁盘
+
+原来的 `/clear` 只重置了内存列表。现在需要同时清除 session 并保存到磁盘，
+否则下次启动还会恢复旧对话：
+
+```python
+            elif text == "/clear":
+                if session is not None:
+                    session.clear()
+                    session.add_message(SYSTEM_MSG)
+                    await sessions.save(SESSION_KEY)
+                    messages = session.messages
+                else:
+                    messages = [SYSTEM_MSG]
+                console.print("[dim]Conversation cleared.[/dim]")
+```
+
+#### 验证效果
+
+```
+$ python -m ultrabot agent
+you > My name is Alice
+assistant > Nice to meet you, Alice!
+you > /quit
+
+$ python -m ultrabot agent
+Restored 2 message(s) from previous session.
+you > What's my name?
+assistant > Your name is Alice!
+```
+
+会话文件保存在 `~/.ultrabot/sessions/cli:interactive.json`。
 
 ### 测试
 
 ```python
-# tests/test_session.py
+# tests/test_session9.py
 import asyncio, tempfile
 from pathlib import Path
 from ultrabot.session.manager import Session, SessionManager
@@ -404,7 +674,7 @@ def test_session_manager_eviction():
 ### 检查点
 
 ```bash
-python -m pytest tests/test_session.py -v
+python -m pytest tests/test_session9.py -v
 ```
 
 预期结果：全部 4 个测试通过。然后进行实际测试 — 在 CLI REPL 中与智能体对话，退出，
@@ -415,6 +685,10 @@ python -m pytest tests/test_session.py -v
 一个 `Session` 数据类，跟踪带有 token 估算的对话历史；一个
 `SessionManager`，将会话以 JSON 文件形式持久化、通过 TTL 淘汰空闲会话、
 通过 LRU 强制执行最大会话数上限，并修剪消息以适应 LLM 的
-上下文窗口。对话现在可以在重启后存活。
+上下文窗口。`Agent.run()` 已改为 `async`，通过 `session_key` 区分不同对话，
+在每轮工具循环结束后自动修剪并持久化会话。CLI 交互模式（`cli/commands.py`）
+已接入 `SessionManager`，启动时自动从 `~/.ultrabot/sessions/` 恢复上次对话，
+每轮对话后保存到磁盘，`/clear` 命令同时清除内存和磁盘。整个改动向后兼容 —
+不传 `sessions` 参数时行为与之前完全一致。对话现在可以在重启后存活。
 
 ---
