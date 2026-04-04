@@ -52,7 +52,19 @@ class WecomChannel(BaseChannel):
         self._client.on("event.enter_chat", self._on_enter_chat)
         # ... 图片、语音、文件、混合消息处理器 ...
 
+        self._running = True
         await self._client.connect_async()
+
+    async def stop(self) -> None:
+        """优雅关闭 WebSocket 连接。"""
+        self._running = False
+        if self._client is not None:
+            try:
+                await self._client.disconnect()
+            except Exception:
+                logger.debug("Wecom client disconnect error (ignored)")
+            self._client = None
+        logger.info("WecomChannel stopped")
 
     async def send(self, msg: "OutboundMessage") -> None:
         """使用流式回复 API 进行回复。"""
@@ -64,3 +76,55 @@ class WecomChannel(BaseChannel):
         await self._client.reply_stream(
             frame, stream_id, msg.content.strip(), finish=True
         )
+
+    def _is_allowed(self, sender_id: str) -> bool:
+        """检查发送者是否在允许列表中（空列表表示允许所有人）。"""
+        if not self._allow_from:
+            return True
+        return sender_id in self._allow_from
+
+    async def _on_text_message(self, frame: Any) -> None:
+        """处理收到的文本消息回调。"""
+        from ultrabot.bus.events import InboundMessage
+
+        msg_id = getattr(frame, "msg_id", None) or str(id(frame))
+        # 消息去重
+        if msg_id in self._processed_ids:
+            return
+        self._processed_ids[msg_id] = None
+        while len(self._processed_ids) > 1000:
+            self._processed_ids.popitem(last=False)
+
+        sender_id = getattr(frame, "sender_id", "") or ""
+        chat_id = getattr(frame, "chat_id", "") or sender_id
+        content = getattr(frame, "content", "") or ""
+
+        if not self._is_allowed(sender_id):
+            logger.debug("Wecom message from {} blocked by allowFrom", sender_id)
+            return
+
+        # 保存 frame 用于回复路由
+        self._chat_frames[chat_id] = frame
+
+        logger.info("Wecom text from {} in {}: {}", sender_id, chat_id, content[:50])
+        await self.bus.publish(InboundMessage(
+            channel=self.name,
+            sender_id=sender_id,
+            chat_id=chat_id,
+            content=content,
+        ))
+
+    async def _on_enter_chat(self, frame: Any) -> None:
+        """处理用户进入聊天事件 — 发送欢迎消息。"""
+        chat_id = getattr(frame, "chat_id", "") or ""
+        self._chat_frames[chat_id] = frame
+
+        if self._welcome_message:
+            logger.info("Wecom enter_chat event for {}, sending welcome", chat_id)
+            try:
+                stream_id = self._generate_req_id("stream")
+                await self._client.reply_stream(
+                    frame, stream_id, self._welcome_message, finish=True
+                )
+            except Exception as exc:
+                logger.error("Failed to send welcome message: {}", exc)

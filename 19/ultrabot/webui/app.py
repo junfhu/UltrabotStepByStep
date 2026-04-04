@@ -250,9 +250,7 @@ def create_app(config_path: str | Path | None = None) -> FastAPI:
         except Exception as exc:
             raise HTTPException(500, str(exc))
 
-    return app
-
-    # 在 create_app 内部，REST 端点之后：
+    # --- WebSocket 端点 ---
 
     @app.websocket("/ws/chat")
     async def ws_chat(websocket: WebSocket) -> None:
@@ -320,7 +318,7 @@ def create_app(config_path: str | Path | None = None) -> FastAPI:
         except WebSocketDisconnect:
             logger.info("WebSocket client disconnected")
 
-    # 仍在 create_app 内部：
+    # --- 静态文件 ---
     _STATIC_DIR.mkdir(parents=True, exist_ok=True)
 
     @app.get("/")
