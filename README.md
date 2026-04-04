@@ -27,12 +27,14 @@
 | 03 | [工具调用 -- 赋予 LLM 超能力](03-tool-calling-give-the-llm-superpowers.md) | 让 LLM 调用函数与真实世界交互，建立 Tool 抽象基类和 ToolRegistry |
 | 04 | [更多工具 + 工具集组合](04-more-tools-toolset-composition.md) | 添加更多工具并分组为可启用/禁用的命名工具集 |
 
-### 第二部分：架构（课程 5-6）
+### 第二部分：架构（课程 5-8）
 
 | 课程 | 标题 | 简介 |
 |------|------|------|
 | 05 | [配置系统](05-configuration-system.md) | 使用 Pydantic BaseSettings 构建类型化配置，支持 JSON 文件和环境变量覆盖 |
 | 06 | [提供者抽象 -- 多 LLM 支持](06-provider-abstraction-multiple-llms.md) | 将 LLM 通信抽取为可插拔的提供者系统，支持 OpenAI、DeepSeek、Groq 等任意后端 |
+| 07 | [Anthropic 提供者 -- 添加 Claude](07-anthropic-provider-adding-claude.md) | 添加原生 Anthropic（Claude）支持，处理不同 LLM API 之间的格式转换 |
+| 08 | [CLI + 交互式 REPL](08-cli-interactive-repl.md) | 使用 Typer、Rich Live 和 prompt_toolkit 构建完善的命令行界面 |
 
 > 更多课程正在持续更新中，敬请期待...
 

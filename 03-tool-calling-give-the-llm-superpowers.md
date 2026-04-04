@@ -2,7 +2,7 @@
 **从零开始构建一个生产级 AI 助手框架。**
 本指南将带你从"向 LLM 问好"一步步走到一个完整的多提供者、多通道 AI 智能体，具备工具调用、记忆、安全防护和 Web 界面。每节课程都建立在上一节课的基础之上。每节课都包含可运行的代码和测试。  
 本教程的主要思路来自于Nanobot(https://github.com/HKUDS/nanobot)以及Learn-Claude-Code(https://github.com/shareAI-lab/learn-claude-code/)，所以对应的叫做Ultrabot。  
-本课程设计由AI辅助下完成，更新地址见https://github.com/junfhu/UltrabotStepByStep，如果您觉得对您有帮助，请帮助点亮一颗星。  
+本课程设计由AI辅助下完成，因为课程自身也在不停修正，请参考https://github.com/junfhu/UltrabotStepByStep的最新版本，如果您觉得对您有帮助，请帮助点亮一颗星。  
 本课程中使用的大模型提供商是火山引擎Code Plan，如果正好你也需要，可以使用我的邀请码获取9折优惠 https://volcengine.com/L/_01BJCkKdMc/  邀请码：HHCDB4J4）  
 
 
@@ -146,7 +146,7 @@ import stat
 from pathlib import Path
 from typing import Any
 
-from tools.base import Tool, ToolRegistry
+from ultrabot.tools.base import Tool, ToolRegistry
 
 _MAX_OUTPUT_CHARS = 80_000  # 硬性上限，避免撑爆 LLM 上下文窗口
 
@@ -421,7 +421,7 @@ def register_builtin_tools(registry: ToolRegistry) -> None:
 
 ### 步骤 4：将工具接入智能体循环
 
-现在是关键时刻 -- 我们更新 Agent 以支持工具调用。这是 `ultrabot/agent/agent.py` 第 99-174 行的核心逻辑：
+现在是关键时刻 -- 我们更新 Agent 以支持工具调用。这是 `ultrabot/agent.py` 第 99-174 行的核心逻辑：
 
 ```python
 from __future__ import annotations
@@ -431,14 +431,14 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from openai import OpenAI
-from tools.base import ToolRegistry
+from ultrabot.tools.base import ToolRegistry
 
 
 @dataclass
 class ToolCallRequest:
     """LLM 请求的单个工具调用。
 
-    取自 ultrabot/agent/agent.py 第 24-30 行。
+    取自 ultrabot/agent.py 第 24-30 行。
     """
     id: str
     name: str
@@ -471,7 +471,7 @@ You are **UltraBot**, a helpful personal AI assistant.
 class Agent:
     """支持工具调用的智能体。
 
-    对应 ultrabot/agent/agent.py -- run() 方法实现了
+    对应 ultrabot/agent.py -- run() 方法实现了
     完整的工具循环。
     """
 
@@ -499,7 +499,7 @@ class Agent:
     ) -> str:
         """通过完整的智能体循环处理用户消息。
 
-        循环（取自 ultrabot/agent/agent.py 第 110-174 行）：
+        循环（取自 ultrabot/agent.py 第 110-174 行）：
         1. 调用 LLM
         2. 如果返回 tool_calls -> 执行它们 -> 追加结果 -> 继续循环
         3. 如果只返回文本  -> 这就是最终答案 -> 跳出循环
@@ -559,7 +559,7 @@ class Agent:
     async def _execute_tool(self, tc: ToolCallRequest) -> str:
         """执行单个工具调用。
 
-        取自 ultrabot/agent/agent.py 第 180-233 行。
+        取自 ultrabot/agent.py 第 180-233 行。
         """
         tool = self._tools.get(tc.name)
         if tool is None:
@@ -650,12 +650,12 @@ class Agent:
 ### 步骤 5：整合使用
 
 ```python
-# main.py -- 带工具的智能体
+# ultrabot/main.py -- 带工具的智能体
 import os
 from openai import OpenAI
-from agent import Agent
-from tools.base import ToolRegistry
-from tools.builtin import register_builtin_tools
+from ultrabot.agent import Agent
+from ultrabot.tools.base import ToolRegistry
+from ultrabot.tools.builtin import register_builtin_tools
 
 # 创建并填充工具注册表
 registry = ToolRegistry()
@@ -699,14 +699,8 @@ while True:
 """课程 3 的测试 -- 工具调用。"""
 import asyncio
 from pathlib import Path
-import sys
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from tools.base import Tool, ToolRegistry
+from ultrabot.tools.base import Tool, ToolRegistry
 
 
 class EchoTool(Tool):
@@ -767,7 +761,7 @@ def test_tool_execute():
 
 def test_read_file_tool(tmp_path):
     """ReadFileTool 读取文件内容。"""
-    from tools.builtin import ReadFileTool
+    from ultrabot.tools.builtin import ReadFileTool
 
     test_file = tmp_path / "test.txt"
     test_file.write_text("Hello, world!")
@@ -779,7 +773,7 @@ def test_read_file_tool(tmp_path):
 
 def test_list_directory_tool(tmp_path):
     """ListDirectoryTool 列出目录内容。"""
-    from tools.builtin import ListDirectoryTool
+    from ultrabot.tools.builtin import ListDirectoryTool
 
     (tmp_path / "file_a.txt").write_text("a")
     (tmp_path / "file_b.txt").write_text("b")
@@ -794,7 +788,7 @@ def test_list_directory_tool(tmp_path):
 
 def test_write_file_tool(tmp_path):
     """WriteFileTool 创建并写入文件。"""
-    from tools.builtin import WriteFileTool
+    from ultrabot.tools.builtin import WriteFileTool
 
     target = tmp_path / "output" / "test.txt"
     tool = WriteFileTool()
@@ -808,7 +802,7 @@ def test_write_file_tool(tmp_path):
 
 def test_builtin_registration():
     """register_builtin_tools 填充注册表。"""
-    from tools.builtin import register_builtin_tools
+    from ultrabot.tools.builtin import register_builtin_tools
 
     registry = ToolRegistry()
     register_builtin_tools(registry)
@@ -824,7 +818,7 @@ def test_builtin_registration():
 ### 检查点
 
 ```bash
-python main.py
+python ultrabot/main.py
 ```
 
 ```

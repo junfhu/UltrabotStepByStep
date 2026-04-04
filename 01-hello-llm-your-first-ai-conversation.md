@@ -2,7 +2,7 @@
 **从零开始构建一个生产级 AI 助手框架。**
 本指南将带你从"向 LLM 问好"一步步走到一个完整的多提供者、多通道 AI 智能体，具备工具调用、记忆、安全防护和 Web 界面。每节课程都建立在上一节课的基础之上。每节课都包含可运行的代码和测试。  
 本教程的主要思路来自于Nanobot(https://github.com/HKUDS/nanobot)以及Learn-Claude-Code(https://github.com/shareAI-lab/learn-claude-code/)，所以对应的叫做Ultrabot。  
-本课程设计由AI辅助下完成，更新地址见https://github.com/junfhu/UltrabotStepByStep，如果您觉得对您有帮助，请帮助点亮一颗星。  
+本课程设计由AI辅助下完成，因为课程自身也在不停修正，请参考https://github.com/junfhu/UltrabotStepByStep的最新版本，如果您觉得对您有帮助，请帮助点亮一颗星。  
 本课程中使用的大模型提供商是火山引擎Code Plan，如果正好你也需要，可以使用我的邀请码获取9折优惠 https://volcengine.com/L/_01BJCkKdMc/  邀请码：HHCDB4J4）  
 
 
@@ -18,7 +18,7 @@
 - 如何构建多轮对话循环
 
 **新建文件：**
-- `chat.py` -- 一个可以立即运行的单文件聊天机器人
+- `ultrabot/chat.py` -- 一个可以立即运行的单文件聊天机器人
 
 ### 步骤 0：使用 pyenv 安装 Python 3.12
 
@@ -59,10 +59,10 @@ export OPENAI_API_KEY="sk-..."
 
 ### 步骤 3：向 LLM 打个招呼
 
-创建 `chat.py`：
+创建 `ultrabot/chat.py`：
 
 ```python
-# chat.py -- 你的第一次 AI 对话
+# ultrabot/chat.py -- 你的第一次 AI 对话
 import os
 from openai import OpenAI
 
@@ -87,7 +87,8 @@ print(response.choices[0].message.content)
 运行：
 
 ```bash
-python chat.py
+python ultrabot/chat_1.py
+Hello! How can I help you today?
 ```
 
 你应该能看到模型返回的友好问候。这就是整个 OpenAI 兼容 chat API：你发送一个
@@ -109,7 +110,7 @@ python chat.py
 ### 步骤 5：添加系统提示词
 
 ```python
-# chat.py -- 现在有了个性
+# ultrabot/chat_1.py -- 现在有了个性
 import os
 from openai import OpenAI
 
@@ -141,7 +142,7 @@ print(response.choices[0].message.content)
 关键洞察：要进行对话，你需要维护一个不断增长的 `messages` 列表。每次助手回复后，将其追加到列表，然后追加下一条用户消息。
 
 ```python
-# chat.py -- 完整的多轮聊天机器人（适用于任何 OpenAI 兼容提供者）
+# ultrabot/chat_2.py -- 完整的多轮聊天机器人（适用于任何 OpenAI 兼容提供者）
 import os
 from openai import OpenAI
 
@@ -206,6 +207,15 @@ dependencies = ["openai>=1.0"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 ```
+
+> **提示：** 在后续课程中，源代码将放在 `ultrabot/` 子目录中形成 Python 包。此时你可以先在项目根目录下创建这个子目录和 `__init__.py` 文件：
+
+```bash
+mkdir -p ultrabot
+touch ultrabot/__init__.py
+```
+
+这样 `from ultrabot.xxx import ...` 的导入方式才能生效。后续课程新建的文件都应放在 `ultrabot/` 子目录下。
 
 ### 测试
 
@@ -301,7 +311,7 @@ def test_response_parsing_mock(monkeypatch):
     mock_response = MagicMock()
     mock_response.choices = [mock_choice]
 
-    # 这就是我们在 chat.py 中解析它的方式
+    # 这就是我们在 ultrabot/chat.py 中解析它的方式
     result = mock_response.choices[0].message.content
     assert result == "Hello! How can I help?"
 ```
@@ -317,7 +327,7 @@ pytest tests/test_session1.py -v
 
 ```bash
 # 使用任意提供者 -- 设置环境变量后运行：
-python chat.py
+python ultrabot/chat_2.py
 ```
 
 预期输出：

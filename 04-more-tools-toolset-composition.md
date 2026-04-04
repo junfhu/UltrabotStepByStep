@@ -2,7 +2,7 @@
 **从零开始构建一个生产级 AI 助手框架。**
 本指南将带你从"向 LLM 问好"一步步走到一个完整的多提供者、多通道 AI 智能体，具备工具调用、记忆、安全防护和 Web 界面。每节课程都建立在上一节课的基础之上。每节课都包含可运行的代码和测试。  
 本教程的主要思路来自于Nanobot(https://github.com/HKUDS/nanobot)以及Learn-Claude-Code(https://github.com/shareAI-lab/learn-claude-code/)，所以对应的叫做Ultrabot。  
-本课程设计由AI辅助下完成，更新地址见https://github.com/junfhu/UltrabotStepByStep，如果您觉得对您有帮助，请帮助点亮一颗星。  
+本课程设计由AI辅助下完成，因为课程自身也在不停修正，请参考https://github.com/junfhu/UltrabotStepByStep的最新版本，如果您觉得对您有帮助，请帮助点亮一颗星。  
 本课程中使用的大模型提供商是火山引擎Code Plan，如果正好你也需要，可以使用我的邀请码获取9折优惠 https://volcengine.com/L/_01BJCkKdMc/  邀请码：HHCDB4J4）  
 
 
@@ -119,7 +119,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from tools.base import Tool, ToolRegistry
+from ultrabot.tools.base import Tool, ToolRegistry
 
 
 @dataclass
@@ -246,14 +246,14 @@ def register_default_toolsets(manager: ToolsetManager) -> None:
 更新 `main.py` 以接受 `--tools` 参数：
 
 ```python
-# main.py -- 带工具集过滤
+# ultrabot/main.py -- 带工具集过滤
 import os
 import sys
 from openai import OpenAI
-from agent import Agent
-from tools.base import ToolRegistry
-from tools.builtin import register_builtin_tools
-from tools.toolsets import ToolsetManager, register_default_toolsets
+from ultrabot.agent import Agent
+from ultrabot.tools.base import ToolRegistry
+from ultrabot.tools.builtin import register_builtin_tools
+from ultrabot.tools.toolsets import ToolsetManager, register_default_toolsets
 
 # 解析简单的 --tools 参数
 toolset_arg = "all"
@@ -401,7 +401,7 @@ def test_unknown_toolset(full_setup):
 
 ```bash
 # 只使用代码工具
-python main.py --tools code
+python ultrabot/main.py --tools code
 ```
 
 ```
@@ -415,7 +415,7 @@ assistant > [calls python_eval(code="print(2**100)")]
 
 ```bash
 # 只使用文件工具
-python main.py --tools file_ops
+python ultrabot/main.py --tools file_ops
 ```
 
 LLM 将只能看到文件工具，看不到 exec_command 或 web_search。

@@ -2,7 +2,7 @@
 **从零开始构建一个生产级 AI 助手框架。**
 本指南将带你从"向 LLM 问好"一步步走到一个完整的多提供者、多通道 AI 智能体，具备工具调用、记忆、安全防护和 Web 界面。每节课程都建立在上一节课的基础之上。每节课都包含可运行的代码和测试。  
 本教程的主要思路来自于Nanobot(https://github.com/HKUDS/nanobot)以及Learn-Claude-Code(https://github.com/shareAI-lab/learn-claude-code/)，所以对应的叫做Ultrabot。  
-本课程设计由AI辅助下完成，更新地址见https://github.com/junfhu/UltrabotStepByStep，如果您觉得对您有帮助，请帮助点亮一颗星。  
+本课程设计由AI辅助下完成，因为课程自身也在不停修正，请参考https://github.com/junfhu/UltrabotStepByStep的最新版本，如果您觉得对您有帮助，请帮助点亮一颗星。  
 本课程中使用的大模型提供商是火山引擎Code Plan，如果正好你也需要，可以使用我的邀请码获取9折优惠 https://volcengine.com/L/_01BJCkKdMc/  邀请码：HHCDB4J4）  
 
 
@@ -237,10 +237,10 @@ class Agent:
 ### 步骤 3：使用 Agent
 
 ```python
-# main.py -- 使用 Agent 类
+# ultrabot/main.py -- 使用 Agent 类
 import os
 from openai import OpenAI
-from agent import Agent
+from ultrabot.agent import Agent
 
 client = OpenAI(
     api_key=os.getenv("OPENAI_API_KEY"),
@@ -278,16 +278,9 @@ while True:
 ```python
 # tests/test_session2.py
 """课程 2 的测试 -- Agent 类和流式输出。"""
-from pathlib import Path
-import sys
 from unittest.mock import MagicMock
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-from agent import Agent, LLMResponse
+from ultrabot.agent import Agent, LLMResponse
 
 
 def make_agent(model: str = "gpt-4o-mini", max_iterations: int = 10) -> Agent:
@@ -364,9 +357,9 @@ def test_agent_clear():
 ```
 
 ### 检查点
-
 ```bash
-python main.py
+pip install -e .
+python ultrabot/main.py
 ```
 
 预期输出 -- token 实时流式输出：
