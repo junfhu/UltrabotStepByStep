@@ -428,3 +428,220 @@ LLM 将只能看到文件工具，看不到 exec_command 或 web_search。
 一个将工具分组为命名类别的工具集系统。ToolsetManager 将工具集名称解析为具体的 Tool 实例，支持启用/禁用，并支持多个工具集的组合去重。这直接对应 `ultrabot/tools/toolsets.py`。
 
 ---
+
+## 本课使用的 Python 知识
+
+### `@dataclass` 与 `field(default_factory=list)`（数据类）
+
+本课新增了 `Toolset` 数据类，用 `@dataclass` 自动生成 `__init__` 等方法：
+
+```python
+from dataclasses import dataclass, field
+
+@dataclass
+class Toolset:
+    name: str
+    description: str
+    tool_names: list[str] = field(default_factory=list)
+    enabled: bool = True
+```
+
+- 没有默认值的字段（`name`、`description`）是必填参数
+- `field(default_factory=list)` 为每个实例创建独立的空列表
+- `enabled: bool = True` 直接使用默认值
+
+```python
+ts = Toolset("file_ops", "File tools", ["read_file", "write_file"])
+print(ts.name)        # file_ops
+print(ts.enabled)     # True
+```
+
+**为什么在本课使用：** `Toolset` 只需要存储名称、描述、工具名列表和启用状态，没有复杂行为。`@dataclass` 让定义这种纯数据容器变得极其简洁。
+
+---
+
+### `set` 集合数据结构（去重）
+
+集合（`set`）是一种**不允许重复元素**的无序数据结构：
+
+```python
+seen_names: set[str] = set()       # 创建空集合
+seen_names.add("read_file")        # 添加元素
+seen_names.add("read_file")        # 重复添加无效
+print(len(seen_names))             # 1
+
+# 集合推导式
+names = {t.name for t in tools}    # 从列表快速创建集合
+```
+
+**为什么在本课使用：** 当多个工具集组合时（如 `["file_ops", "all"]`），同一个工具可能出现多次。`seen_names` 集合追踪已添加的工具名，确保结果列表中没有重复。测试中也用集合推导式 `{t.name for t in tools}` 来验证工具列表。
+
+---
+
+### `sys.argv`（命令行参数）
+
+`sys.argv` 是一个列表，包含运行 Python 脚本时传入的命令行参数：
+
+```python
+import sys
+
+# 运行命令：python main.py --tools code
+print(sys.argv)
+# ['main.py', '--tools', 'code']
+# sys.argv[0] 是脚本名
+# sys.argv[1] 是 '--tools'
+# sys.argv[2] 是 'code'
+
+if "--tools" in sys.argv:
+    idx = sys.argv.index("--tools")
+    toolset_arg = sys.argv[idx + 1]    # 获取 --tools 后面的值
+```
+
+**为什么在本课使用：** 让用户通过命令行选择启用哪些工具集（如 `--tools code` 只启用代码工具，`--tools file_ops` 只启用文件工具）。这是最简单的命令行参数解析方式，后续可以升级为 `argparse`。
+
+---
+
+### `@pytest.fixture`（pytest 夹具）
+
+`@pytest.fixture` 定义可复用的测试准备逻辑，在多个测试函数之间共享：
+
+```python
+import pytest
+
+@pytest.fixture
+def full_setup():
+    """创建包含所有工具的注册表和管理器。"""
+    registry = ToolRegistry()
+    register_builtin_tools(registry)
+    manager = ToolsetManager(registry)
+    register_default_toolsets(manager)
+    return registry, manager
+
+def test_toolset_file_ops(full_setup):   # full_setup 作为参数自动注入
+    _, manager = full_setup
+    tools = manager.resolve(["file_ops"])
+    assert len(tools) == 3
+```
+
+pytest 在执行测试函数前，自动调用同名 fixture 并将返回值传入。每个测试函数都会获得一份全新的 fixture 实例。
+
+**为什么在本课使用：** 本课有 7 个测试都需要相同的"注册表 + 管理器"初始化。`@pytest.fixture` 避免了在每个测试函数中重复编写相同的准备代码。
+
+---
+
+### `textwrap.dedent()`（去缩进）
+
+`textwrap.dedent()` 移除多行字符串中公共的前导空白，让代码中的多行字符串保持美观的缩进：
+
+```python
+import textwrap
+
+code = textwrap.dedent("""\
+    import sys
+    print("Hello")
+    print(sys.version)
+""")
+# code 的每一行都去掉了前导的 4 个空格
+```
+
+**为什么在本课使用：** `PythonEvalTool` 需要生成一段 Python 包装代码。这段代码在源文件中是缩进的（在方法内部），但执行时需要去掉缩进。`dedent()` 让我们在保持源代码美观的同时，生成正确格式的代码。
+
+---
+
+### `sys.executable`（Python 解释器路径）
+
+`sys.executable` 返回当前运行的 Python 解释器的完整路径：
+
+```python
+import sys
+print(sys.executable)
+# 例如: /home/user/.venv/bin/python3.12
+```
+
+**为什么在本课使用：** `PythonEvalTool` 需要在子进程中执行用户代码。使用 `sys.executable` 而不是硬编码 `"python"`，确保子进程使用的是与当前程序**同一个** Python 版本和虚拟环境，避免包找不到或版本不匹配的问题。
+
+---
+
+### 组合模式（`ToolsetManager` 组合 `ToolRegistry`）
+
+组合模式是面向对象设计中"使用已有对象来构建更复杂对象"的思想，而不是通过继承：
+
+```python
+class ToolsetManager:
+    def __init__(self, registry: ToolRegistry) -> None:
+        self._registry = registry      # 组合：持有 registry 的引用
+        self._toolsets: dict[str, Toolset] = {}
+
+    def resolve(self, toolset_names: list[str]) -> list[Tool]:
+        # 通过 registry 查找具体的 Tool 实例
+        tool = self._registry.get(tool_name)
+        ...
+```
+
+`ToolsetManager` 不继承 `ToolRegistry`，而是**持有**一个 `ToolRegistry` 实例并委托它来查找工具。
+
+**为什么在本课使用：** `ToolsetManager` 负责"按名字分组管理工具集"，`ToolRegistry` 负责"存储和查找工具"。两者职责不同，用组合让它们各司其职、相互协作。如果用继承，会把两个不相关的职责混在一起。
+
+---
+
+### `f-string` 中的 `!r` 格式化（repr 表示）
+
+`{value!r}` 在 f-string 中输出变量的 `repr()` 表示（带引号的字符串、完整的数据表示）：
+
+```python
+name = "hello"
+print(f"Name is {name}")      # Name is hello
+print(f"Name is {name!r}")    # Name is 'hello'（带引号）
+```
+
+在代码生成中特别有用：
+
+```python
+code = "print(42)"
+wrapper = f"exec(compile({code!r}, '<eval>', 'exec'))"
+# 结果: exec(compile("print(42)", '<eval>', 'exec'))
+```
+
+**为什么在本课使用：** `PythonEvalTool` 需要将用户的代码字符串嵌入到包装代码中。`{code!r}` 确保代码字符串被正确引用和转义，不会因为代码中包含引号或特殊字符而产生语法错误。
+
+---
+
+### `KeyError` 异常
+
+`KeyError` 是当你访问字典中不存在的键时 Python 抛出的异常：
+
+```python
+data = {"a": 1}
+try:
+    print(data["b"])     # 键 "b" 不存在
+except KeyError:
+    print("Key not found!")
+```
+
+也可以主动抛出来表示"无效参数"：
+
+```python
+def enable(self, name: str) -> None:
+    ts = self._toolsets.get(name)
+    if ts is None:
+        raise KeyError(f"Unknown toolset: {name!r}")
+    ts.enabled = True
+```
+
+**为什么在本课使用：** `ToolsetManager.enable()` 和 `disable()` 在工具集名称不存在时主动抛出 `KeyError`，让调用者及时知道传入了无效名称。而 `resolve()` 方法则静默忽略未知名称——两种策略适用于不同场景。
+
+---
+
+### 函数内部导入
+
+将 `import` 语句放在函数内部而不是文件顶部：
+
+```python
+class PythonEvalTool(Tool):
+    async def execute(self, arguments):
+        import sys           # 在函数内部导入
+        import textwrap
+        ...
+```
+
+**为什么在本课使用：** `sys` 和 `textwrap` 只在 `PythonEvalTool.execute()` 中使用。将导入放在函数内部可以延迟加载（只在该方法被调用时才导入），并让模块顶部的导入列表保持简洁。对于不常调用的工具，这种方式可以略微加快程序启动速度。

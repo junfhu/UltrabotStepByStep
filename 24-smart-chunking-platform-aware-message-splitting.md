@@ -317,3 +317,215 @@ print(f"✓ {len(chunks)} 个分块，所有围栏完好")
 一个平台感知的消息拆分器，支持两种策略（长度和段落）、代码围栏保护以及按通道的限制表。通道在发送前调用 `chunk_text(response, get_chunk_limit("telegram"))`，用户将永远不会看到被破坏的代码块。
 
 ---
+
+## 本课使用的 Python 知识
+
+### `from __future__ import annotations`
+
+这是一个特殊的导入语句，让 Python 把所有类型注解当作字符串处理（延迟求值），使新式类型语法在较早版本的 Python 中可用。
+
+```python
+from __future__ import annotations
+
+def chunk_text(text: str, limit: int) -> list[str]:
+    ...
+```
+
+**为什么在本课中使用：** 代码中使用了 `list[str]`、`dict[str, int]`、`int | None` 等内置泛型类型注解，加上这一行确保兼容 Python 3.9+。
+
+### `Enum` 枚举类型与 `str, Enum` 多重继承
+
+`Enum` 用于定义一组命名常量。同时继承 `str` 和 `Enum` 后，枚举值可以直接当字符串比较和使用。
+
+```python
+from enum import Enum
+
+class ChunkMode(str, Enum):
+    LENGTH = "length"
+    PARAGRAPH = "paragraph"
+
+print(ChunkMode.LENGTH == "length")  # True
+print(ChunkMode.LENGTH.value)        # "length"
+```
+
+**为什么在本课中使用：** `ChunkMode` 定义了两种拆分策略（`LENGTH` 和 `PARAGRAPH`），用枚举可以防止传入无效的模式字符串，又因为继承了 `str`，可以方便地序列化和比较。
+
+### `dict[str, int]` 类型注解的字典
+
+Python 3.9+ 允许直接在内置类型上使用泛型语法（`dict[str, int]`）来标注字典的键值类型。
+
+```python
+CHANNEL_CHUNK_LIMITS: dict[str, int] = {
+    "telegram": 4096,
+    "discord": 2000,
+    "slack": 4000,
+}
+```
+
+**为什么在本课中使用：** 平台限制查找表是一个从通道名（字符串）到字符数限制（整数）的映射，用 `dict[str, int]` 清晰表达了数据结构。
+
+### `list[str]` 类型注解的列表
+
+与字典类似，`list[str]` 标注一个元素全为字符串的列表。
+
+```python
+def chunk_text(text: str, limit: int) -> list[str]:
+    chunks: list[str] = []
+    ...
+    return chunks
+```
+
+**为什么在本课中使用：** `chunk_text()` 返回拆分后的文本列表，用 `list[str]` 清晰标注返回值类型，帮助 IDE 和类型检查器提供更好的提示。
+
+### 字符串方法：`split()`、`strip()`、`count()`、`find()`、`rfind()`
+
+Python 字符串提供了丰富的内置方法，用于拆分、清理和搜索：
+
+```python
+text = "Hello\n\nWorld\n\nPython"
+
+# split() — 按分隔符拆分
+paragraphs = text.split("\n\n")  # ["Hello", "World", "Python"]
+
+# strip() / rstrip() / lstrip() — 去除首尾空白
+"  hello  ".strip()   # "hello"
+"hello  ".rstrip()    # "hello"
+
+# count() — 统计子串出现次数
+"```code```more```".count("```")  # 3
+
+# find() / rfind() — 查找子串位置（rfind 从右向左查）
+text.find("World")     # 7（从左找）
+text.rfind("World")    # 7（从右找）
+```
+
+**为什么在本课中使用：** 分块器需要在合适的位置断开文本——`split("\n\n")` 按段落拆分，`rfind("\n")` 找到最后一个换行处断开，`count("```")` 统计代码围栏数量判断是否在代码块内部。
+
+### `while` 循环
+
+`while` 循环在条件为真时反复执行，适合不知道具体迭代次数的场景。
+
+```python
+remaining = "very long text..."
+chunks = []
+while remaining:
+    if len(remaining) <= limit:
+        chunks.append(remaining)
+        break
+    chunk = remaining[:limit]
+    chunks.append(chunk)
+    remaining = remaining[limit:]
+```
+
+**为什么在本课中使用：** 基于长度的拆分算法需要不断从剩余文本中切出符合限制的分块，直到没有剩余文本——这正是 `while` 循环的典型应用。
+
+### `for` 循环与 `break` / `continue`
+
+`for` 遍历可迭代对象。`break` 立即退出循环，`continue` 跳过本次迭代进入下一轮。
+
+```python
+for sep in ["\n\n", "\n", " "]:
+    pos = candidate.rfind(sep)
+    if pos > limit // 4:
+        best = pos + len(sep)
+        break  # 找到最佳断开点，退出循环
+```
+
+**为什么在本课中使用：** 寻找最佳断开点时，按优先级依次尝试双换行、单换行、空格——一旦找到合适的位置就用 `break` 退出，不再尝试更低优先级的分隔符。
+
+### 列表推导与条件过滤
+
+列表推导可以在一行内从可迭代对象生成新列表，`if` 子句可以过滤不符合条件的元素。
+
+```python
+# 过滤掉空白分块
+chunks = [c for c in chunks if c.strip()]
+```
+
+**为什么在本课中使用：** 拆分后可能产生空的分块（全是空白字符），用列表推导加条件过滤一步清理干净。
+
+### 字符串切片
+
+Python 的切片语法 `s[start:end]` 可以从字符串中取出子串。支持省略 `start`（从头开始）或 `end`（到末尾）。
+
+```python
+text = "Hello, World!"
+print(text[:5])    # "Hello"    — 前 5 个字符
+print(text[7:])    # "World!"   — 第 7 个字符到末尾
+print(text[-6:])   # "World!"   — 倒数 6 个字符到末尾
+```
+
+**为什么在本课中使用：** 分块的核心操作就是切片——`remaining[:limit]` 取出一个分块，`remaining[best:]` 保留剩余文本。
+
+### 函数默认参数
+
+函数定义时可以为参数设置默认值，调用时如果不传该参数就使用默认值。
+
+```python
+def chunk_text(
+    text: str,
+    limit: int,
+    mode: ChunkMode = ChunkMode.LENGTH,  # 默认使用长度模式
+) -> list[str]:
+    ...
+```
+
+**为什么在本课中使用：** `chunk_text()` 的 `mode` 参数默认为 `LENGTH`，大多数调用者不需要关心拆分模式，简化了接口。
+
+### `__all__` 模块导出控制
+
+`__all__` 是一个字符串列表，定义了使用 `from module import *` 时导出哪些名称。它就像模块的"公开 API 清单"。
+
+```python
+# ultrabot/chunking/__init__.py
+__all__ = [
+    "ChunkMode",
+    "chunk_text",
+    "get_chunk_limit",
+    "CHANNEL_CHUNK_LIMITS",
+]
+```
+
+**为什么在本课中使用：** 明确声明 chunking 包的公开接口，隐藏内部实现函数（如 `_chunk_by_length`、`_chunk_by_paragraph`），让使用者只看到需要用的部分。
+
+### 策略模式（函数调度）
+
+根据条件选择不同的处理函数执行——这是"策略模式"的简单实现。在 Python 中用 `if/elif` 调度即可，无需复杂的类继承。
+
+```python
+def chunk_text(text: str, limit: int, mode: ChunkMode = ChunkMode.LENGTH) -> list[str]:
+    if mode == ChunkMode.PARAGRAPH:
+        return _chunk_by_paragraph(text, limit)  # 段落策略
+    return _chunk_by_length(text, limit)          # 长度策略
+```
+
+**为什么在本课中使用：** 分块器提供两种策略——基于长度和基于段落。`chunk_text()` 根据 `mode` 参数调度到不同的内部函数，符合"开放-封闭"原则：添加新策略只需增加新函数和一个 `elif` 分支。
+
+### `f-string` 格式化字符串
+
+f-string（`f"...{expr}..."`）可以在字符串中直接嵌入变量或表达式，简洁高效。
+
+```python
+channel = "telegram"
+limit = 4096
+print(f"通道 {channel} 的消息限制是 {limit} 字符")
+```
+
+**为什么在本课中使用：** 测试代码中用 f-string 格式化输出信息（如 `f"✓ {len(chunks)} 个分块"`），使调试信息更清晰可读。
+
+### `pytest` 测试框架
+
+`pytest` 是 Python 最流行的测试框架，支持类组织测试、丰富的断言、参数化等功能。
+
+```python
+import pytest
+
+class TestChunkText:
+    def test_empty_text(self):
+        assert chunk_text("", 100) == []
+
+    def test_within_limit_returns_single(self):
+        assert chunk_text("hello", 100) == ["hello"]
+```
+
+**为什么在本课中使用：** 分块逻辑有很多边界情况（空文本、在限制内、代码围栏、段落拆分），需要全面的测试来确保每种情况都正确处理。

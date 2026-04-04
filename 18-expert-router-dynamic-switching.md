@@ -534,3 +534,237 @@ asyncio.run(demo())
 自动路由。此外还有一个 GitHub 同步模块，可下载完整的人设语料库。
 
 ---
+
+## 本课使用的 Python 知识
+
+### `@dataclass(slots=True)`（带 slots 的数据类）
+
+`@dataclass` 自动生成构造函数和常用方法。`slots=True` 让实例使用固定的属性槽而非字典，节省内存且访问更快。
+
+```python
+from dataclasses import dataclass
+
+@dataclass(slots=True)
+class Point:
+    x: float
+    y: float
+
+p = Point(1.0, 2.0)
+print(p)  # Point(x=1.0, y=2.0)
+```
+
+**为什么在本课中使用：** `RouteResult` 是每次路由决策的返回值，包含被选中的专家、清理后的消息和决策来源。`@dataclass` 让这个结构的定义简洁明了，`slots=True` 确保频繁创建的路由结果对象内存高效。
+
+### `re.compile()` 与正则表达式标志组合
+
+`re.compile()` 预编译正则表达式模式。多个标志可以用 `|`（按位或）组合：`re.UNICODE` 支持 Unicode 字符匹配，`re.IGNORECASE` 不区分大小写。
+
+```python
+import re
+
+pattern = re.compile(r"^/command\s+(\w+)", re.UNICODE | re.IGNORECASE)
+m = pattern.match("/Command Hello")
+if m:
+    print(m.group(1))  # "Hello"
+```
+
+**为什么在本课中使用：** 路由器需要解析多种命令格式（`@slug`、`/expert slug`、`/expert off`、`/experts`），每种都有独立的正则模式。`re.UNICODE` 确保中文 slug 也能匹配，`re.IGNORECASE` 让 `/Expert` 和 `/expert` 都有效。
+
+### `async def` / `await`（异步方法）
+
+在类中定义 `async def` 方法，使其成为异步方法。调用时需要 `await`，适合包含网络调用或其他 I/O 操作的方法。
+
+```python
+class DataFetcher:
+    async def fetch(self, url: str) -> str:
+        # 模拟异步网络请求
+        await asyncio.sleep(1)
+        return "data"
+
+fetcher = DataFetcher()
+result = await fetcher.fetch("https://example.com")
+```
+
+**为什么在本课中使用：** `ExpertRouter.route()` 是异步方法，因为自动路由模式需要调用 LLM API（`_auto_select` 通过 `chat_with_failover` 请求 LLM），这是一个网络 I/O 操作，必须用 `await` 等待。
+
+### `dict` 作为缓存（粘性会话映射）
+
+Python 字典可以作为简单的内存缓存使用。键是查找标识符，值是缓存的数据。
+
+```python
+sticky_sessions = {}
+
+# 记住用户的选择
+sticky_sessions["user:123"] = "coder"
+
+# 下次查找
+expert = sticky_sessions.get("user:123")  # "coder"
+print(expert)
+```
+
+**为什么在本课中使用：** `ExpertRouter` 用 `self._sticky: dict[str, str]` 存储每个会话当前激活的专家 slug。用户选择专家后，后续消息会自动路由到同一专家，直到明确切换——这就是"粘性会话"机制。
+
+### 正则匹配对象（`match.group()` 与 `match.end()`）
+
+`re.match()` 返回一个 `Match` 对象。`.group(1)` 获取第一个捕获组的内容，`.end()` 获取匹配结束的位置，方便截取剩余文本。
+
+```python
+import re
+
+m = re.match(r"^@(\w+)\s*", "@coder Fix this bug")
+if m:
+    slug = m.group(1)           # "coder"
+    rest = "@coder Fix this bug"[m.end():]  # "Fix this bug"
+```
+
+**为什么在本课中使用：** 命令解析需要同时提取 slug（如 `coder`）和剩余消息文本（如 `Fix this bug`）。`m.group(1)` 取出 slug，`message[m.end():]` 截取命令之后的用户实际消息。
+
+### 条件链优先级模式
+
+通过一系列 `if/elif` 或连续的 `if ... return` 实现优先级从高到低的匹配逻辑。先检查的条件优先级更高。
+
+```python
+async def route(self, message, session_key):
+    # 优先级 1：停用命令
+    if is_off_command(message):
+        return handle_off()
+
+    # 优先级 2：列表命令
+    if is_list_command(message):
+        return handle_list()
+
+    # 优先级 3：显式命令
+    # 优先级 4：粘性会话
+    # 优先级 5：自动路由
+    # 优先级 6：默认
+    return default_route()
+```
+
+**为什么在本课中使用：** `ExpertRouter.route()` 按 6 级优先级处理消息：停用命令 > 列表命令 > 显式命令 > 粘性会话 > LLM 自动路由 > 默认。每级用 `if + return` 实现"命中即返回"，清晰表达优先级链。
+
+### `urllib.request`（标准库 HTTP 请求）
+
+`urllib.request` 是 Python 标准库的 HTTP 模块，无需安装第三方库即可发起网络请求。`Request` 对象可设置请求头，`urlopen` 执行请求。
+
+```python
+from urllib.request import Request, urlopen
+import json
+
+req = Request("https://api.github.com/repos/user/repo",
+              headers={"Accept": "application/json"})
+with urlopen(req, timeout=30) as resp:
+    data = json.loads(resp.read().decode("utf-8"))
+```
+
+**为什么在本课中使用：** `sync.py` 从 GitHub API 下载人设文件。使用标准库而非 `requests` 或 `httpx`，避免了额外的依赖安装——同步功能是辅助工具，不值得引入新依赖。
+
+### `json.loads()` / `json.dumps()`（JSON 序列化）
+
+`json.loads()` 将 JSON 字符串解析为 Python 对象（字典/列表），`json.dumps()` 将 Python 对象序列化为 JSON 字符串。
+
+```python
+import json
+
+data = {"name": "Alice", "age": 30}
+json_str = json.dumps(data, indent=2)  # Python -> JSON 字符串
+parsed = json.loads(json_str)           # JSON 字符串 -> Python
+print(parsed["name"])  # "Alice"
+```
+
+**为什么在本课中使用：** GitHub API 返回 JSON 格式的仓库文件树。`_fetch_tree()` 用 `json.loads()` 解析 API 响应，提取人设文件的路径列表。
+
+### `frozenset`（不可变常量集合）
+
+`frozenset` 创建后不能修改，适合存储固定的配置值或白名单。查找操作的时间复杂度为 O(1)。
+
+```python
+ALLOWED_DEPTS = frozenset({"engineering", "design", "marketing"})
+
+dept = "engineering"
+if dept in ALLOWED_DEPTS:  # 快速查找
+    print("有效部门")
+```
+
+**为什么在本课中使用：** `PERSONA_DIRS` 用 `frozenset` 存储所有有效的部门目录名（如 `"engineering"`、`"design"` 等）。同步时用它过滤仓库文件树，只下载属于已知部门的人设文件。
+
+### `Path.mkdir(parents=True, exist_ok=True)`（安全创建目录）
+
+`parents=True` 自动创建所有不存在的父目录，`exist_ok=True` 在目录已存在时不报错。两者组合让目录创建变得安全可靠。
+
+```python
+from pathlib import Path
+
+path = Path("/tmp/a/b/c")
+path.mkdir(parents=True, exist_ok=True)  # 无论是否存在都不报错
+```
+
+**为什么在本课中使用：** 同步人设文件到本地目录时，目标目录可能不存在。`dest_dir.mkdir(parents=True, exist_ok=True)` 确保目录结构正确建立，无论是首次运行还是重复运行。
+
+### `asyncio.get_running_loop()` 与 `loop.run_in_executor()`
+
+`get_running_loop()` 获取当前正在运行的事件循环。`run_in_executor(None, func)` 在线程池中运行同步函数，并返回可 `await` 的结果——让同步代码不阻塞事件循环。
+
+```python
+import asyncio
+
+def slow_sync_work():
+    import time
+    time.sleep(2)
+    return "done"
+
+async def main():
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, slow_sync_work)
+    print(result)
+```
+
+**为什么在本课中使用：** `async_sync_personas()` 将同步的文件下载函数包装为异步版本。文件下载涉及大量阻塞 I/O，通过 `run_in_executor` 在线程池中执行，不会阻塞主 asyncio 事件循环。
+
+### `*,`（强制关键字参数）
+
+函数参数中的 `*,` 之后的参数必须以关键字形式传递，不能按位置传递。这提高了调用的可读性并防止参数顺序错误。
+
+```python
+def sync_personas(dest_dir, *, departments=None, force=False):
+    pass
+
+# sync_personas(path, {"eng"}, True)  # 错误！
+sync_personas(path, departments={"eng"}, force=True)  # 正确
+```
+
+**为什么在本课中使用：** `sync_personas()` 的 `departments`、`force`、`progress_callback` 都是可选参数。使用 `*,` 强制以关键字传递，避免了调用时因参数顺序混乱而产生的 bug。
+
+### `@pytest.fixture` 与 `@pytest.mark.asyncio`（异步测试）
+
+`@pytest.fixture` 创建可复用的测试准备代码。`@pytest.mark.asyncio` 让测试函数可以是 `async def`，pytest 会自动管理事件循环。
+
+```python
+import pytest
+
+@pytest.fixture
+def registry():
+    reg = ExpertRegistry()
+    reg.register(some_persona)
+    return reg
+
+@pytest.mark.asyncio
+async def test_route(registry):
+    router = ExpertRouter(registry)
+    result = await router.route("@coder hello", session_key="s1")
+    assert result.source == "command"
+```
+
+**为什么在本课中使用：** 路由器的 `route()` 是异步方法，测试中必须用 `await` 调用。`@pytest.mark.asyncio` 让 pytest 可以运行异步测试。`@pytest.fixture` 为多个测试类提供预配置的 `registry` 和 `router` 实例。
+
+### f-string 格式化字符串
+
+f-string（以 `f` 开头的字符串）可以在花括号中嵌入 Python 表达式，是最简洁的字符串格式化方式。
+
+```python
+name = "Alice"
+score = 95.5
+print(f"Student: {name}, Score: {score:.1f}")
+# 输出: Student: Alice, Score: 95.5
+```
+
+**为什么在本课中使用：** 路由器在构建专家列表、日志消息和 LLM 提示词时大量使用 f-string，如 `f"- @{p.slug} -- {p.name}: {p.description[:60]}"`，将人设信息格式化为可读的文本输出。

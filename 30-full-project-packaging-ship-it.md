@@ -718,3 +718,317 @@ Successfully installed ultrabot-ai-0.1.0
 - **规范的 Python 包**，可通过 `pip install -e ".[all,dev]"` 安装，并通过 `ultrabot` 或 `python -m ultrabot` 运行
 
 每一行代码都经过了测试。每个模块都可以导入。`ultrabot` 命令正常工作。**交付上线。**
+
+---
+
+## 本课使用的 Python 知识
+
+### `__init__.py`（包初始化文件）
+
+`__init__.py` 是 Python 包的标志文件，它告诉 Python 这个目录是一个包（package），可以被导入。文件可以是空的，也可以包含包级别的初始化代码。
+
+```python
+# ultrabot/__init__.py
+"""ultrabot - AI 助手框架。"""
+
+__version__ = "0.1.0"
+__all__ = ["__version__"]
+```
+
+**为什么在本课中使用：** 每个 `ultrabot/` 子目录（`agent/`、`tools/`、`config/` 等共 20+ 个）都需要 `__init__.py` 文件，Python 才能将它们识别为包并支持 `from ultrabot.agent import ...` 这样的导入。
+
+### `__version__` 包版本元数据
+
+在 `__init__.py` 中定义 `__version__` 是 Python 社区的约定，让用户和工具能通过代码获取包的版本号。
+
+```python
+# 在 __init__.py 中定义
+__version__ = "0.1.0"
+
+# 用户可以这样查看版本
+import ultrabot
+print(ultrabot.__version__)  # "0.1.0"
+```
+
+**为什么在本课中使用：** `__version__ = "0.1.0"` 让 `ultrabot --version` 命令和测试代码都能读取到版本号。测试中还验证了它与 `pyproject.toml` 中的版本号一致。
+
+### `__all__`（模块公开接口）
+
+`__all__` 是一个字符串列表，定义了当用户执行 `from module import *` 时，哪些名称会被导出。它起到了"公开 API 声明"的作用。
+
+```python
+# mymodule.py
+__all__ = ["public_func", "PublicClass"]
+
+def public_func():
+    ...
+
+def _internal_func():  # 不在 __all__ 中，不会被 * 导入
+    ...
+```
+
+**为什么在本课中使用：** `__all__ = ["__version__", "__logo__"]` 明确声明了 `ultrabot` 包对外暴露的接口只有版本号和 logo，避免内部模块被意外导入，保持包的 API 清晰。
+
+### `__main__.py`（包可执行入口）
+
+当一个包包含 `__main__.py` 文件时，用户可以用 `python -m 包名` 来运行它。Python 会执行 `__main__.py` 中的代码。
+
+```python
+# mypackage/__main__.py
+"""python -m mypackage 的入口点。"""
+
+from mypackage.cli import main
+
+if __name__ == "__main__":
+    main()
+```
+
+**为什么在本课中使用：** `ultrabot/__main__.py` 让用户可以用 `python -m ultrabot` 运行程序，这是 `ultrabot` 控制台命令的替代方式。在某些环境下（如 PATH 未正确配置），`python -m` 比直接运行控制台命令更可靠。
+
+### `if __name__ == "__main__"`（主模块检测）
+
+这个条件判断当前文件是否作为主程序直接运行（而不是被其他模块导入）。只有直接运行时，`__name__` 才等于 `"__main__"`。
+
+```python
+def main():
+    print("程序启动")
+
+if __name__ == "__main__":
+    main()  # 直接运行时执行
+    # 被 import 时不会执行
+```
+
+**为什么在本课中使用：** `__main__.py` 中的 `if __name__ == "__main__": app()` 确保只有在用 `python -m ultrabot` 运行时才启动 CLI 应用，如果只是导入这个模块则不会执行。
+
+### `pyproject.toml`（现代 Python 打包配置）
+
+`pyproject.toml` 是 PEP 518/621 定义的统一项目配置文件，替代了传统的 `setup.py`、`setup.cfg`。它在一个文件中定义项目元数据、依赖、构建系统和工具配置。
+
+```toml
+[project]
+name = "my-package"
+version = "1.0.0"
+dependencies = ["requests>=2.28"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.scripts]
+mycommand = "my_package.cli:main"
+```
+
+**为什么在本课中使用：** `pyproject.toml` 是本课的核心文件，它定义了 ultrabot 的所有元数据（名称、版本、描述）、核心依赖和可选依赖、控制台入口点、构建系统以及 Ruff 和 pytest 的配置，一个文件搞定一切。
+
+### 控制台入口点（Console Entry Points / `[project.scripts]`）
+
+`[project.scripts]` 在安装包时创建可执行命令。`pip install` 会在系统 PATH 中创建一个可执行文件，指向指定的 Python 函数。
+
+```toml
+[project.scripts]
+ultrabot = "ultrabot.cli.commands:app"
+# 安装后，在终端输入 ultrabot 就会调用 ultrabot.cli.commands 模块中的 app 函数
+```
+
+**为什么在本课中使用：** `ultrabot = "ultrabot.cli.commands:app"` 让用户在安装包后，可以直接在终端输入 `ultrabot` 命令来使用。Typer 的 `app` 对象处理所有命令行参数解析。
+
+### 可选依赖组（Optional Dependencies / `[project.optional-dependencies]`）
+
+可选依赖让用户只安装需要的功能。用 `pip install package[extra]` 语法安装特定的依赖组。
+
+```toml
+[project.optional-dependencies]
+telegram = ["python-telegram-bot>=22.6"]
+discord = ["discord.py>=2.4"]
+all = ["my-package[telegram,discord]"]  # 元组安装所有
+dev = ["pytest>=9.0", "ruff>=0.1"]
+```
+
+```bash
+pip install my-package[telegram]     # 只安装 Telegram 依赖
+pip install my-package[all]          # 安装所有可选依赖
+pip install my-package[all,dev]      # 所有依赖 + 开发工具
+```
+
+**为什么在本课中使用：** ultrabot 支持 7 个消息通道，每个通道有不同的依赖库。将它们拆分为可选依赖组（`telegram`、`discord`、`slack` 等），让用户只安装需要的通道，避免不必要的依赖膨胀。
+
+### `typer` CLI 框架
+
+Typer 是基于类型注解的 Python CLI 框架（FastAPI 的作者开发），它利用类型提示自动生成命令行参数解析和帮助文档。
+
+```python
+import typer
+
+app = typer.Typer()
+
+@app.command()
+def greet(name: str, count: int = 1):
+    """向某人打招呼。"""
+    for _ in range(count):
+        print(f"Hello, {name}!")
+
+# 命令行: python app.py greet Alice --count 3
+```
+
+**为什么在本课中使用：** `ultrabot` CLI 使用 Typer 构建，它自动从类型注解生成参数解析，支持子命令（`agent`、`gateway`、`webui` 等），并自动生成格式优美的 `--help` 文档。
+
+### `Annotated` 类型（PEP 593）
+
+`Annotated` 允许在类型注解中附加额外的元数据。Typer 用它来将命令行选项的配置（如 `--version`）直接写在类型注解中。
+
+```python
+from typing import Annotated, Optional
+import typer
+
+def main(
+    version: Annotated[Optional[bool],
+        typer.Option("--version", "-V", is_eager=True)
+    ] = None,
+):
+    ...
+```
+
+**为什么在本课中使用：** CLI 的 `--version` 选项用 `Annotated` 将 Typer 的选项配置（选项名 `--version`、短名 `-V`、回调函数）与类型注解合并在一起，代码更紧凑。
+
+### `importlib.import_module()`（动态导入）
+
+`importlib.import_module()` 在运行时根据模块名字符串来导入模块，适合需要动态加载模块的场景。
+
+```python
+import importlib
+
+# 根据字符串动态导入模块
+module = importlib.import_module("ultrabot.agent")
+print(module)  # <module 'ultrabot.agent' from '...'>
+
+# 等价于 import ultrabot.agent，但模块名可以是变量
+```
+
+**为什么在本课中使用：** `TestPackageImports` 测试类用 `importlib.import_module(module)` 动态导入所有子模块，配合 `@pytest.mark.parametrize` 批量验证每个模块都能正常导入，无需为每个模块写单独的 `import` 语句。
+
+### `subprocess.run()`（运行子进程）
+
+`subprocess.run()` 用于在 Python 中执行外部命令并获取其输出。它是替代 `os.system()` 的推荐方式。
+
+```python
+import subprocess, sys
+
+result = subprocess.run(
+    [sys.executable, "-m", "ultrabot", "--help"],
+    capture_output=True,  # 捕获 stdout 和 stderr
+    text=True,            # 以文本模式返回（不是 bytes）
+    timeout=30,           # 超时时间（秒）
+)
+print(result.returncode)  # 0 表示成功
+print(result.stdout)       # 命令的标准输出
+```
+
+**为什么在本课中使用：** `TestEntryPoint` 测试类用 `subprocess.run()` 实际执行 `ultrabot --help` 和 `ultrabot --version` 命令，验证安装后的控制台入口点确实可以正常工作。这是端到端（E2E）测试的方式。
+
+### `pytest.mark.parametrize`（参数化测试）
+
+`@pytest.mark.parametrize` 让一个测试方法用不同的参数多次运行，避免重复编写相似的测试代码。
+
+```python
+import pytest
+
+@pytest.mark.parametrize("input,expected", [
+    (1, 1),
+    (2, 4),
+    (3, 9),
+])
+def test_square(input, expected):
+    assert input ** 2 == expected
+    # 生成 3 个独立的测试用例
+```
+
+**为什么在本课中使用：** `TestPackageImports` 用 `@pytest.mark.parametrize("module", [...])` 列出 18+ 个模块路径，一个测试方法自动生成 18 个测试用例，每个验证一个模块能正常导入。比写 18 个单独的 `test_import_xxx` 方法简洁得多。
+
+### `tomllib`（TOML 文件解析，Python 3.11+）
+
+`tomllib` 是 Python 3.11 内置的 TOML 文件解析库（之前需要第三方库 `tomli`）。TOML 是一种人类可读的配置文件格式。
+
+```python
+import tomllib
+from pathlib import Path
+
+with open("pyproject.toml", "rb") as f:  # 必须以二进制模式打开
+    data = tomllib.load(f)
+
+print(data["project"]["version"])  # "0.1.0"
+```
+
+**为什么在本课中使用：** `test_version_matches_pyproject` 测试用 `tomllib` 解析 `pyproject.toml` 并提取版本号，验证它与代码中的 `__version__` 一致。确保发布时不会出现版本号不匹配的问题。
+
+### `pathlib.Path` 路径操作
+
+`pathlib.Path` 提供面向对象的路径处理，支持 `/` 运算符拼接、`.parent` 父目录、`.iterdir()` 遍历目录等。
+
+```python
+from pathlib import Path
+
+root = Path(__file__).parent.parent / "ultrabot"
+for subdir in root.iterdir():
+    if subdir.is_dir() and not subdir.name.startswith("_"):
+        print(subdir.name)
+```
+
+**为什么在本课中使用：** `TestPackageStructure` 用 `Path(__file__).parent.parent / "ultrabot"` 定位项目根目录，然后用 `.iterdir()` 遍历所有子目录，检查每个都有 `__init__.py` 文件。
+
+### `sys.executable`（当前 Python 解释器路径）
+
+`sys.executable` 返回当前正在运行的 Python 解释器的完整路径，确保子进程使用同一个 Python 环境。
+
+```python
+import sys, subprocess
+
+# 用当前 Python 解释器运行脚本
+subprocess.run([sys.executable, "-m", "pytest", "tests/"])
+# 比直接写 "python" 更可靠，因为系统可能有多个 Python 版本
+```
+
+**为什么在本课中使用：** 测试中用 `sys.executable` 而不是硬编码 `"python"` 来运行 `python -m ultrabot`，确保使用的是测试环境中的同一个 Python 解释器，避免版本混乱。
+
+### `str.startswith()` 字符串前缀检测
+
+`startswith()` 检查字符串是否以指定前缀开头，可以传入字符串或元组。
+
+```python
+name = "__pycache__"
+if name.startswith(("_", ".")):
+    print("跳过隐藏/内部目录")
+```
+
+**为什么在本课中使用：** `TestPackageStructure` 用 `subdir.name.startswith(("_", "."))` 过滤掉 `__pycache__`、`.git` 等特殊目录，只检查正常的子包目录是否有 `__init__.py`。
+
+### Hatchling 构建后端
+
+Hatchling 是一个现代的 Python 包构建后端，比传统的 setuptools 更轻量，原生支持 `pyproject.toml` 配置。
+
+```toml
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["ultrabot/**/*.py"]  # 指定要包含的文件
+
+[tool.hatch.build.targets.wheel]
+packages = ["ultrabot"]  # 指定包目录
+```
+
+**为什么在本课中使用：** ultrabot 包含 Python 代码、Markdown 模板、静态资源等混合内容。Hatchling 的 `include` 配置可以灵活指定哪些文件打包进最终的分发包，比 setuptools 的 `MANIFEST.in` 更直观。
+
+### 可编辑安装 `pip install -e`
+
+`pip install -e "."` 以"可编辑模式"安装包，修改源代码后无需重新安装就能生效。开发时必备。
+
+```bash
+# 可编辑安装，包含所有可选依赖和开发工具
+pip install -e ".[all,dev]"
+
+# 修改 ultrabot/ 下的代码后，直接运行就是最新的
+ultrabot --version
+```
+
+**为什么在本课中使用：** 开发阶段使用 `pip install -e ".[all,dev]"` 安装 ultrabot，这样可以一边修改代码一边测试，不需要每次改动都重新安装。`[all,dev]` 同时安装所有可选依赖和测试工具。

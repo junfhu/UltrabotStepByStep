@@ -562,3 +562,264 @@ python -m pytest tests/test_browser_delegate.py -v
 六个浏览器自动化工具（导航、快照、点击、输入、滚动、关闭）通过延迟导入封装了 Playwright，加上一个 `DelegateTaskTool`，可以生成具有受限工具集、独立会话和可配置超时的隔离子智能体。智能体现在可以浏览网页并委派复杂的子任务。
 
 ---
+
+## 本课使用的 Python 知识
+
+### 延迟导入（Lazy Import）
+
+延迟导入是指在函数或方法内部才执行 `import` 语句，而不是在文件顶部导入。这样，即使某个库未安装，只要不调用那个具体函数，整个模块也能正常导入。
+
+```python
+# 不在顶部导入 playwright，而是在需要时才导入
+async def start_browser():
+    from playwright.async_api import async_playwright  # 延迟导入
+    pw = await async_playwright().start()
+    browser = await pw.chromium.launch()
+    return browser
+```
+
+**为什么在本课中使用：** Playwright 是一个较重的可选依赖（需要下载浏览器二进制文件）。延迟导入让 `ultrabot/tools/browser.py` 即使在没有安装 Playwright 的环境中也能被正常导入，只有真正调用浏览器工具时才会触发 `ImportError`。
+
+### 模块级单例模式（Module-level Singleton）
+
+在模块级别创建一个对象实例，所有使用者共享同一个实例。Python 模块在首次导入时只执行一次，因此模块级变量天然是单例的。
+
+```python
+class _DatabasePool:
+    def __init__(self):
+        self._connections = []
+
+# 模块级单例 — 所有导入这个模块的代码共享同一个实例
+_pool = _DatabasePool()
+```
+
+**为什么在本课中使用：** `_manager = _BrowserManager()` 作为模块级单例，确保所有 6 个浏览器工具共享同一个浏览器实例。这样不会打开多个浏览器窗口，节省资源，且工具之间可以在同一个页面上协作。
+
+### `async/await`（异步编程）
+
+`async def` 定义异步函数（协程），`await` 等待异步操作完成。异步编程允许在等待 I/O（网络请求、文件读写）时执行其他任务。
+
+```python
+async def fetch_page(url):
+    page = await browser.new_page()
+    await page.goto(url)
+    title = await page.title()
+    return title
+```
+
+**为什么在本课中使用：** 浏览器操作（导航、点击、输入）和子智能体委派都涉及大量 I/O 等待。`async/await` 让 ultrabot 在等待页面加载或子智能体响应时可以处理其他任务，保持高效运行。
+
+### 类继承（Class Inheritance）
+
+Python 的类可以继承自一个父类（基类），获得父类的所有属性和方法，同时可以添加或覆盖自己的行为。
+
+```python
+class Animal:
+    def speak(self):
+        raise NotImplementedError
+
+class Dog(Animal):
+    def speak(self):  # 覆盖父类方法
+        return "Woof!"
+
+class Cat(Animal):
+    def speak(self):
+        return "Meow!"
+```
+
+**为什么在本课中使用：** 所有 6 个浏览器工具（`BrowserNavigateTool`、`BrowserClickTool` 等）都继承自 `Tool` 基类。基类定义了 `name`、`description`、`parameters` 和 `execute()` 的接口约定，每个子类实现自己的 `execute()` 逻辑。
+
+### 类属性 vs 实例属性
+
+类属性直接定义在类体中，由所有实例共享；实例属性在 `__init__` 中通过 `self` 定义，每个实例独有。
+
+```python
+class Tool:
+    name = "default"          # 类属性 — 所有实例共享
+    description = ""          # 类属性
+
+    def __init__(self):
+        self.result = None    # 实例属性 — 每个实例独立
+```
+
+**为什么在本课中使用：** 每个浏览器工具的 `name`、`description`、`parameters` 都是类属性（如 `name = "browser_navigate"`），因为这些信息是该类型工具的固有特征，不会随实例变化。工具注册表可以直接通过类来获取元数据。
+
+### `Any | None` 联合类型（PEP 604）
+
+Python 3.10+ 支持用 `|` 运算符组合类型注解，`Any | None` 表示值可以是任意类型或 `None`。
+
+```python
+from typing import Any
+
+value: int | str = 42      # 可以是 int 或 str
+client: Any | None = None  # 可以是任意类型或 None
+```
+
+**为什么在本课中使用：** `_BrowserManager` 的内部变量 `self._playwright: Any | None = None` 表示 Playwright 实例可能尚未创建（`None`）或者是一个 Playwright 对象（`Any`，因为是延迟导入的，在定义时不知道精确类型）。
+
+### `try/except ImportError`（优雅处理缺失依赖）
+
+当尝试导入一个可能未安装的库时，可以用 `try/except ImportError` 捕获导入错误，提供友好的错误提示或降级方案。
+
+```python
+try:
+    from playwright.async_api import async_playwright
+except ImportError:
+    print("请先安装 playwright: pip install playwright")
+```
+
+**为什么在本课中使用：** 每个浏览器工具的 `execute()` 方法都用 `try/except ImportError` 包裹对 `_manager.ensure_browser()` 的调用。如果 Playwright 未安装，工具会返回安装指引文本而不是崩溃。
+
+### `asyncio.wait_for()`（异步超时控制）
+
+`asyncio.wait_for()` 为一个协程设置最大等待时间。如果协程在指定时间内没有完成，会抛出 `asyncio.TimeoutError`。
+
+```python
+import asyncio
+
+async def slow_task():
+    await asyncio.sleep(100)
+
+try:
+    result = await asyncio.wait_for(slow_task(), timeout=5.0)
+except asyncio.TimeoutError:
+    print("任务超时了！")
+```
+
+**为什么在本课中使用：** 子智能体委派使用 `asyncio.wait_for()` 限制子 Agent 的运行时间。`request.timeout_seconds`（默认 120 秒）防止子智能体陷入无限循环或长时间运行消耗资源。
+
+### `time.monotonic()`（单调时钟）
+
+`time.monotonic()` 返回一个不会倒退的时间值（不受系统时钟调整影响），适合测量经过的时间。
+
+```python
+import time
+
+start = time.monotonic()
+# ... 执行一些操作 ...
+elapsed = time.monotonic() - start
+print(f"耗时: {elapsed:.3f} 秒")
+```
+
+**为什么在本课中使用：** `delegate()` 函数用 `time.monotonic()` 精确测量子智能体的执行时间。相比 `time.time()`，`monotonic()` 不受系统时钟被人为调整的影响，计时更可靠。
+
+### `@dataclass` 与 `field(default_factory=...)`
+
+`field(default_factory=...)` 用于为数据类字段设置可变默认值（如列表、字典）。直接使用 `= []` 作为默认值是 Python 的经典陷阱。
+
+```python
+from dataclasses import dataclass, field
+
+@dataclass
+class Config:
+    tags: list[str] = field(default_factory=list)          # 每个实例有自己的列表
+    names: list[str] = field(default_factory=lambda: ["all"])  # 自定义默认值
+```
+
+**为什么在本课中使用：** `DelegationRequest` 的 `toolset_names` 默认值是 `["all"]`，用 `field(default_factory=lambda: ["all"])` 确保每个请求实例有自己独立的列表，而不是共享同一个可变对象。
+
+### `__getattr__` 魔术方法（属性委托/代理模式）
+
+`__getattr__` 在访问一个不存在的属性时被调用，可以用来将属性访问委托给另一个对象，实现代理模式。
+
+```python
+class Proxy:
+    def __init__(self, target):
+        self._target = target
+        self.special = "覆盖值"
+
+    def __getattr__(self, name):
+        return getattr(self._target, name)  # 委托给目标对象
+
+# Proxy 的 special 属性使用自己的值，其他属性委托给 target
+```
+
+**为什么在本课中使用：** `_ChildConfig` 覆盖了 `max_tool_iterations` 属性，但其他所有配置项（`model`、`provider` 等）通过 `__getattr__` 委托给父配置。这避免了复制整个配置对象，只需要覆盖一两个参数。
+
+### 生成器表达式与 `sum()`
+
+生成器表达式类似列表推导式，但使用圆括号且不会立即创建列表，而是惰性求值。可以与 `sum()`、`any()`、`all()` 等函数组合使用。
+
+```python
+# 计算列表中偶数的个数
+numbers = [1, 2, 3, 4, 5, 6]
+count = sum(1 for n in numbers if n % 2 == 0)
+print(count)  # 3
+```
+
+**为什么在本课中使用：** `_count_iterations()` 用 `sum(1 for m in session.get_messages() if m.get("role") == "assistant")` 统计子智能体的迭代次数（即助手消息的数量），生成器表达式让这行代码既简洁又内存高效。
+
+### `!r` repr 格式化
+
+在 f-string 中，`!r` 调用对象的 `repr()` 方法，会给字符串加上引号并转义特殊字符，方便调试。
+
+```python
+text = "hello\nworld"
+print(f"原始: {text}")    # 原始: hello
+                           #       world
+print(f"repr: {text!r}")  # repr: 'hello\nworld'
+```
+
+**为什么在本课中使用：** `BrowserTypeTool` 返回 `f"Typed into {selector}: {text!r}"`，用 `!r` 显示输入文本的 repr 形式，这样空格、换行等特殊字符都会可见，方便调试用户输入了什么内容。
+
+### `type(exc).__name__`（获取异常类名）
+
+`type(obj).__name__` 返回对象的类名字符串，常用于在错误信息中包含异常的类型名。
+
+```python
+try:
+    result = 1 / 0
+except Exception as exc:
+    print(f"{type(exc).__name__}: {exc}")
+    # 输出: ZeroDivisionError: division by zero
+```
+
+**为什么在本课中使用：** `delegate()` 捕获所有异常后，用 `f"{type(exc).__name__}: {exc}"` 构建错误信息，让调用者既能看到异常类型（如 `ConnectionError`）也能看到具体错误描述。
+
+### `pytest.mark.asyncio`（异步测试标记）
+
+`pytest-asyncio` 插件允许在 pytest 中直接编写和运行异步测试函数，只需加上 `@pytest.mark.asyncio` 装饰器。
+
+```python
+import pytest
+
+@pytest.mark.asyncio
+async def test_fetch_data():
+    result = await fetch_data("https://example.com")
+    assert result is not None
+```
+
+**为什么在本课中使用：** `TestInMemorySessionManager` 中的 `test_get_or_create` 需要测试 `await mgr.get_or_create("key1")` 这样的异步方法，`@pytest.mark.asyncio` 让 pytest 能够运行这些异步测试。
+
+### `loguru.logger`（结构化日志）
+
+`loguru` 是 Python 的现代日志库，比标准 `logging` 模块更简单易用。它支持彩色输出、自动格式化、文件轮转等。
+
+```python
+from loguru import logger
+
+logger.debug("调试信息")
+logger.info("已注册 {} 个工具", 6)
+logger.warning("浏览器关闭出错: {}", error)
+```
+
+**为什么在本课中使用：** 浏览器工具使用 `logger.debug()` 记录浏览器启动信息，`logger.warning()` 记录关闭浏览器时的错误，`logger.info()` 记录工具注册情况。loguru 的 `{}` 占位符语法比 f-string 更安全（不会因格式化错误导致日志丢失）。
+
+### 注册模式（Registry Pattern）
+
+注册模式是将多个对象集中注册到一个管理器中，方便统一查找和调用。通常涉及一个 `register()` 方法和一个集合来存储注册项。
+
+```python
+class ToolRegistry:
+    def __init__(self):
+        self._tools = {}
+
+    def register(self, tool):
+        self._tools[tool.name] = tool
+
+# 批量注册
+for tool_cls in [NavigateTool, ClickTool, TypeTool]:
+    registry.register(tool_cls())
+```
+
+**为什么在本课中使用：** `register_browser_tools()` 函数遍历 6 个浏览器工具类，实例化每个工具并注册到 `ToolRegistry` 中。注册后，智能体就可以通过工具名（如 `"browser_navigate"`）来查找和调用这些工具。

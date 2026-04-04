@@ -365,3 +365,277 @@ print(redact("My key is sk-abc123def456ghi789jkl0123456"))
 一个双层安全系统：`InjectionDetector` 在用户输入到达 LLM 之前扫描六大类提示词注入，而 `CredentialRedactor` 则从所有输出和日志中剥离 API 密钥和令牌。`RedactingFilter` 与 loguru 集成，确保密钥永远不会通过日志文件泄露。
 
 ---
+
+## 本课使用的 Python 知识
+
+### `from __future__ import annotations`（延迟注解求值）
+
+这是一个特殊的导入语句，让 Python 将类型注解保存为字符串而不立即求值，从而支持使用 `list[str]`、`tuple[int, int]` 等现代泛型语法。
+
+```python
+from __future__ import annotations
+
+def scan(text: str) -> list[InjectionWarning]:
+    ...  # 即使 InjectionWarning 定义在后面也没问题
+```
+
+**为什么在本课中使用：** 注入检测器和脱敏器的类型签名中使用了 `list[tuple[...]]`、`tuple[int, int]` 等现代语法，延迟求值确保兼容性。
+
+### `re` 模块（正则表达式）
+
+`re` 是 Python 的正则表达式模块，用于复杂的文本模式匹配、搜索和替换。正则表达式是一种描述字符串模式的"迷你语言"。
+
+```python
+import re
+
+# 编译正则表达式（提升性能）
+pattern = re.compile(r"ignore\s+previous\s+instructions", re.IGNORECASE)
+
+# 在文本中搜索
+text = "Please IGNORE previous   instructions"
+match = pattern.search(text)
+if match:
+    print(f"找到匹配: {match.group()}")
+```
+
+**为什么在本课中使用：** 注入检测需要识别各种攻击模式（如 "ignore previous instructions"、"you are now"），正则表达式可以灵活匹配这些模式的各种变体（大小写、空格数量等）。凭证脱敏也依赖正则匹配 13 种密钥格式。
+
+### `re.compile()`（预编译正则表达式）
+
+`re.compile()` 将正则表达式字符串编译成一个模式对象，编译后的对象可以反复使用，比每次调用 `re.search()` 更高效。
+
+```python
+# 编译一次，使用多次
+email_re = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+emails = email_re.findall("联系 alice@test.com 或 bob@example.org")
+# 结果: ['alice@test.com', 'bob@example.org']
+```
+
+**为什么在本课中使用：** 所有注入检测模式和凭证匹配模式都在模块加载时预编译为 `re.Pattern` 对象。由于 `scan()` 方法可能被频繁调用，预编译避免了重复编译的开销。
+
+### 正则标志 `re.IGNORECASE`、`re.DOTALL`、`re.MULTILINE`
+
+正则表达式标志控制匹配行为：
+- `re.IGNORECASE` — 忽略大小写
+- `re.DOTALL` — 让 `.` 匹配换行符
+- `re.MULTILINE` — 让 `^` 和 `$` 匹配每行的开头和结尾
+
+```python
+# IGNORECASE: "Hello" 和 "HELLO" 都能匹配
+re.compile(r"hello", re.IGNORECASE)
+
+# DOTALL: . 可以匹配换行
+re.compile(r"<!--.*?-->", re.DOTALL)  # 匹配跨行的 HTML 注释
+
+# MULTILINE: ^ 匹配每一行开头
+re.compile(r"^system:", re.MULTILINE)
+```
+
+**为什么在本课中使用：** 攻击者可能用各种大小写混合来绕过检测（如 "IGNORE Previous Instructions"），`IGNORECASE` 确保无论大小写都能被捕获。`DOTALL` 让 HTML 注释检测可以跨越多行。`MULTILINE` 让伪造的 "system:" 前缀检测可以匹配文本中任何一行的开头。
+
+### `.finditer()` 正则迭代匹配
+
+`finditer()` 返回一个迭代器，依次产出每个匹配对象。相比 `findall()` 只返回匹配的字符串，`finditer()` 还能获取匹配的位置信息。
+
+```python
+import re
+
+pattern = re.compile(r"\d+")
+for match in pattern.finditer("有 3 个苹果和 12 个橘子"):
+    print(f"数字 {match.group()} 在位置 {match.span()}")
+# 数字 3 在位置 (2, 3)
+# 数字 12 在位置 (7, 9)
+```
+
+**为什么在本课中使用：** 注入检测器需要找到文本中**所有**的匹配项及其**位置**（`span`），`finditer()` 完美满足这个需求——每个匹配都能获取 `(start, end)` 偏移量，帮助精确定位注入位置。
+
+### `@dataclass(frozen=True)`（不可变数据类）
+
+`frozen=True` 参数让数据类的实例在创建后不能修改任何字段。尝试修改会抛出 `FrozenInstanceError`。这使得数据类实例可以用作字典的键或放入集合中。
+
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Coordinate:
+    x: float
+    y: float
+
+c = Coordinate(1.0, 2.0)
+# c.x = 3.0  # 这会报错！FrozenInstanceError
+```
+
+**为什么在本课中使用：** `InjectionWarning` 是一个安全检测的发现结果，一旦创建就不应该被修改——检测到的注入类别、严重级别和位置都是确定的。`frozen=True` 保证了告警数据的不可变性。
+
+### `set`（集合）
+
+集合是 Python 中存储唯一元素的无序容器，支持快速的成员检查（`in` 操作）、交集、并集等操作。
+
+```python
+colors = {"red", "green", "blue"}
+print("red" in colors)  # True — O(1) 时间复杂度
+colors.add("yellow")
+```
+
+**为什么在本课中使用：** `_INVISIBLE_CHARS` 使用集合存储所有危险的不可见 Unicode 字符（零宽空格、RTL 覆盖等）。集合保证每个字符只出现一次，且方便后续转换为正则字符类。
+
+### `ord()` 函数（字符转 Unicode 码点）
+
+`ord()` 返回一个字符的 Unicode 码点（整数值），是 `chr()` 的反操作。
+
+```python
+print(ord("A"))      # 65
+print(ord("\u200b"))  # 8203
+print(f"U+{ord('€'):04X}")  # U+20AC
+```
+
+**为什么在本课中使用：** 检测到不可见 Unicode 字符时，`f"Invisible Unicode character U+{ord(char):04X}"` 用 `ord()` 将字符转为码点，生成人类可读的告警描述（如 "U+200B"），方便安全人员识别具体的攻击字符。
+
+### `base64` 模块（Base64 编解码）
+
+Base64 是一种将二进制数据编码为 ASCII 文本的方式。攻击者可能用 Base64 编码来隐藏恶意指令。
+
+```python
+import base64
+
+# 编码
+encoded = base64.b64encode(b"Hello World").decode()
+print(encoded)  # "SGVsbG8gV29ybGQ="
+
+# 解码
+decoded = base64.b64decode(encoded)
+print(decoded)  # b'Hello World'
+```
+
+**为什么在本课中使用：** 攻击者可能将 "ignore previous instructions" 这样的注入内容用 Base64 编码后发送，试图绕过文本检测。检测器会尝试解码所有 Base64 字符串并检查解码内容是否包含可疑短语。
+
+### `all()` 内置函数
+
+`all()` 检查一个可迭代对象中的**所有**元素是否为真值。只要有一个为 `False`，就返回 `False`。
+
+```python
+scores = [85, 90, 78, 95]
+print(all(s >= 60 for s in scores))  # True — 所有成绩都及格
+
+print(all(s >= 80 for s in scores))  # False — 78 不满足
+```
+
+**为什么在本课中使用：** `is_safe()` 方法用 `all(w.severity != "HIGH" for w in self.scan(text))` 检查是否**所有**警告都不是 HIGH 级别。只有完全没有高危告警时，文本才被认为是安全的。
+
+### `re.sub()` 正则替换与反向引用
+
+`re.sub()` 将匹配到的文本替换为指定的字符串。在替换字符串中，`\1`、`\2` 等引用正则中的捕获组。
+
+```python
+import re
+
+# \1 引用第一个括号捕获的内容
+text = "Authorization: Bearer sk-secret123"
+result = re.sub(r"(Authorization:\s*Bearer\s+)(\S+)", r"\1[REDACTED]", text)
+print(result)  # "Authorization: Bearer [REDACTED]"
+```
+
+**为什么在本课中使用：** `redact()` 函数在脱敏 Bearer token 时，需要保留 "Authorization: Bearer " 前缀，只替换实际的密钥部分。`r"\1[REDACTED]"` 让第一个捕获组（前缀）保持不变，只把第二个捕获组（密钥）替换为 `[REDACTED]`。
+
+### `__call__` 魔术方法（可调用对象）
+
+定义 `__call__` 方法后，类的实例可以像函数一样被调用。这在需要有状态的"函数"时非常有用。
+
+```python
+class Multiplier:
+    def __init__(self, factor):
+        self.factor = factor
+
+    def __call__(self, x):
+        return x * self.factor
+
+double = Multiplier(2)
+print(double(5))  # 10 — 像函数一样调用
+```
+
+**为什么在本课中使用：** `RedactingFilter` 实现了 `__call__`，这样它的实例可以直接作为 loguru 的过滤器使用。loguru 期望过滤器是一个可调用对象（接收 `record` 字典并返回布尔值），`__call__` 让 `RedactingFilter()` 满足这个接口。
+
+### Unicode 转义序列
+
+Python 支持在字符串中使用 `\uXXXX`（4 位十六进制）来表示 Unicode 字符。这对于表示不可见字符特别有用。
+
+```python
+# 零宽空格 — 肉眼看不见但占了一个字符位置
+zws = "\u200b"
+print(f"长度: {len('hello' + zws)}")  # 6
+
+# 从右到左覆盖 — 可以让文本显示方向反转
+rlo = "\u202e"
+```
+
+**为什么在本课中使用：** `_INVISIBLE_CHARS` 集合包含了 10 种危险的不可见 Unicode 字符，如零宽空格（`\u200b`）、RTL 覆盖（`\u202e`）等。这些字符常被攻击者用来混淆文本内容或隐藏恶意指令。
+
+### `@staticmethod` 装饰器（静态方法）
+
+静态方法不需要访问实例 (`self`) 或类 (`cls`)，本质上是放在类命名空间里的普通函数。
+
+```python
+class TextProcessor:
+    @staticmethod
+    def clean(text):
+        return text.strip().lower()
+
+TextProcessor.clean("  HELLO  ")  # "hello"
+```
+
+**为什么在本课中使用：** `InjectionDetector.sanitize()` 是一个纯粹的文本处理函数，只需要输入的文本和模块级的 `_INVISIBLE_RE` 正则表达式，不依赖任何实例状态，所以用 `@staticmethod` 最为合适。
+
+### `tuple[int, int]` 元组类型注解
+
+元组可以用类型注解精确描述每个位置的类型。`tuple[int, int]` 表示恰好包含两个整数的元组。
+
+```python
+def get_range() -> tuple[int, int]:
+    return (0, 100)
+
+start, end = get_range()  # 解包
+```
+
+**为什么在本课中使用：** `InjectionWarning.span: tuple[int, int]` 用元组记录匹配的起始和结束位置 `(start, end)`，这是正则匹配 `.span()` 方法的返回格式，用来精确定位注入内容在原始文本中的位置。
+
+### `pytest` 中的 `setup_method`（测试初始化）
+
+`setup_method` 是 pytest 中的一个特殊方法，在每个测试方法运行之前自动调用，用于初始化测试所需的对象。
+
+```python
+class TestDatabase:
+    def setup_method(self):
+        self.db = Database(":memory:")  # 每个测试前创建新数据库
+
+    def test_insert(self):
+        self.db.insert({"name": "Alice"})
+        assert self.db.count() == 1
+```
+
+**为什么在本课中使用：** `TestInjectionDetector` 在 `setup_method` 中创建 `self.detector = InjectionDetector()`，确保每个测试方法都使用一个全新的检测器实例，测试之间互不干扰。
+
+### `list[tuple[re.Pattern[str], str, str, str]]`（复合嵌套类型注解）
+
+Python 类型注解支持嵌套使用，精确描述复杂数据结构的类型。
+
+```python
+# 每个元素是一个四元组：(编译后的正则, 类别, 描述, 严重级别)
+patterns: list[tuple[re.Pattern[str], str, str, str]] = [
+    (re.compile(r"..."), "override", "description", "HIGH"),
+]
+```
+
+**为什么在本课中使用：** `_OVERRIDE_PATTERNS` 和 `_EXFIL_PATTERNS` 都是包含多个四元组的列表，每个元组由预编译的正则表达式和三个字符串（类别、描述、严重级别）组成。精确的类型注解让代码的数据结构一目了然。
+
+### `re.escape()`（转义正则特殊字符）
+
+`re.escape()` 将字符串中所有的正则表达式特殊字符加上反斜杠转义，使它们被当作普通字符匹配。
+
+```python
+import re
+
+# '.' 在正则中是通配符，escape 后变成 '\.'
+print(re.escape("file.txt"))  # "file\\.txt"
+```
+
+**为什么在本课中使用：** 构建不可见字符的正则字符类 `[...]` 时，`re.escape(c) for c in sorted(_INVISIBLE_CHARS)` 确保每个 Unicode 字符都被正确转义，避免某些字符被正则引擎误解为元字符。

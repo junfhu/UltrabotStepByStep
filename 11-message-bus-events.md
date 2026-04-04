@@ -339,3 +339,270 @@ python -m pytest tests/test_bus.py -v
 以及将出站消息扇出到多个订阅者的分发机制。
 
 ---
+
+## 本课使用的 Python 知识
+
+### `from __future__ import annotations`（延迟注解评估）
+
+这是 Python 3.7 引入的特性，让类型注解在运行时不被立即求值，而是保存为字符串。这样可以在类型注解中引用尚未定义的类，避免循环引用问题。
+
+```python
+from __future__ import annotations
+
+class Node:
+    # 可以引用自身类型，不会报错
+    def connect(self, other: Node) -> None:
+        pass
+```
+
+**为什么在本课中使用：** `InboundMessage` 的 `__lt__` 方法参数类型标注为 `InboundMessage`（引用自身类），如果没有这行导入，Python 在定义类时会找不到自身类名。
+
+### `@dataclass` 装饰器（数据类）
+
+`@dataclass` 是 Python 3.7 引入的装饰器，可以自动为类生成 `__init__`、`__repr__`、`__eq__` 等方法，极大减少样板代码。只需声明字段和类型，Python 就会自动帮你写好构造函数。
+
+```python
+from dataclasses import dataclass
+
+@dataclass
+class Point:
+    x: float
+    y: float
+    # 自动生成 __init__(self, x, y)、__repr__() 等
+```
+
+**为什么在本课中使用：** `InboundMessage` 和 `OutboundMessage` 都是纯粹的数据容器（携带通道名、发送者、内容等字段），使用 `@dataclass` 可以用最少的代码定义它们，而不需要手写冗长的 `__init__` 方法。
+
+### `field(default_factory=...)` 数据类字段工厂
+
+在 `@dataclass` 中，如果一个字段的默认值是可变对象（如列表、字典），不能直接写 `media: list = []`，否则所有实例会共享同一个列表。`field(default_factory=list)` 确保每次创建实例时都生成一个全新的空列表。
+
+```python
+from dataclasses import dataclass, field
+
+@dataclass
+class Bag:
+    items: list[str] = field(default_factory=list)  # 每个 Bag 有自己的列表
+```
+
+**为什么在本课中使用：** `InboundMessage` 中的 `media`、`metadata` 字段以及 `timestamp` 字段都使用了 `default_factory`，确保每条消息都有独立的列表/字典/时间戳，避免实例之间的数据污染。
+
+### `lambda` 匿名函数
+
+`lambda` 用于创建简短的一次性函数，语法为 `lambda 参数: 表达式`。它适合用在只需要一个简单表达式的地方。
+
+```python
+square = lambda x: x * x
+print(square(5))  # 25
+```
+
+**为什么在本课中使用：** `timestamp` 字段的 `default_factory=lambda: datetime.now(timezone.utc)` 使用 lambda 包装了一个带参数的函数调用，因为 `default_factory` 要求传入一个无参可调用对象。
+
+### `@property` 属性装饰器
+
+`@property` 让你可以像访问普通属性一样调用一个方法，无需加括号。它常用于将计算逻辑包装成"看起来像属性"的接口。
+
+```python
+class Circle:
+    def __init__(self, radius):
+        self.radius = radius
+
+    @property
+    def area(self):
+        return 3.14 * self.radius ** 2
+
+c = Circle(5)
+print(c.area)  # 78.5，不需要写 c.area()
+```
+
+**为什么在本课中使用：** `session_key` 被定义为属性，外部代码使用 `msg.session_key` 就能获取会话键，内部则自动根据是否有覆盖值来决定返回什么，封装了推导逻辑。
+
+### `__lt__` 魔术方法（运算符重载）
+
+`__lt__` 是 Python 的"小于"比较魔术方法。当你写 `a < b` 时，Python 实际调用的是 `a.__lt__(b)`。通过自定义它，可以改变对象的排序行为。
+
+```python
+class Task:
+    def __init__(self, priority):
+        self.priority = priority
+
+    def __lt__(self, other):
+        return self.priority > other.priority  # 反转！高优先级排前面
+
+tasks = [Task(1), Task(10), Task(5)]
+tasks.sort()  # Task(10) 排最前面
+```
+
+**为什么在本课中使用：** `asyncio.PriorityQueue` 内部使用最小堆，"最小"的元素先出队。通过反转 `__lt__`，让 priority 值大的消息被认为"更小"，从而优先出队。
+
+### `NotImplemented` 特殊返回值
+
+`NotImplemented` 是 Python 内置的特殊单例值（注意不是 `NotImplementedError` 异常）。在比较魔术方法中返回它，意思是"我不知道怎么跟这个类型比较，请让对方试试"。
+
+```python
+def __lt__(self, other):
+    if not isinstance(other, MyClass):
+        return NotImplemented  # 告诉 Python：我处理不了这个比较
+    return self.value < other.value
+```
+
+**为什么在本课中使用：** `InboundMessage.__lt__` 在 `other` 不是同类型时返回 `NotImplemented`，确保与其他类型比较时不会产生意外结果。
+
+### `asyncio.PriorityQueue`（异步优先级队列）
+
+这是 `asyncio` 提供的线程安全优先级队列，内部基于堆实现。`put()` 放入元素，`get()` 取出最"小"的元素。两者都是异步操作，没有数据时 `get()` 会自动等待。
+
+```python
+import asyncio
+
+queue = asyncio.PriorityQueue()
+await queue.put((2, "low priority"))
+await queue.put((1, "high priority"))
+item = await queue.get()  # 拿到 (1, "high priority")
+```
+
+**为什么在本课中使用：** 消息总线需要按优先级处理入站消息，优先级队列天然支持这种需求，配合 `InboundMessage.__lt__` 的反转比较，实现了"高优先级先处理"。
+
+### `asyncio.Event`（异步事件信号）
+
+`asyncio.Event` 是一个简单的信号机制：初始状态为"未设置"，调用 `set()` 后变为"已设置"。配合 `is_set()` 检查或 `wait()` 等待，常用于协调协程之间的通信。
+
+```python
+import asyncio
+
+shutdown = asyncio.Event()
+
+async def worker():
+    while not shutdown.is_set():
+        print("Working...")
+        await asyncio.sleep(1)
+
+# 某处调用 shutdown.set() 通知 worker 停止
+```
+
+**为什么在本课中使用：** `_shutdown_event` 用于通知 `dispatch_inbound` 循环优雅退出。当调用 `shutdown()` 时设置事件，分发循环检测到后自动停止。
+
+### `asyncio.wait_for` 和 `asyncio.TimeoutError`（超时控制）
+
+`asyncio.wait_for` 给一个异步操作加上超时限制。如果在指定时间内没有完成，会抛出 `asyncio.TimeoutError`。
+
+```python
+try:
+    result = await asyncio.wait_for(some_coroutine(), timeout=5.0)
+except asyncio.TimeoutError:
+    print("操作超时了！")
+```
+
+**为什么在本课中使用：** 分发循环使用 `wait_for` 给 `queue.get()` 加了 1 秒超时。如果队列中没有消息，超时后循环会回到顶部检查 `_shutdown_event`，从而实现"不阻塞在空队列上，又能及时响应关闭信号"。
+
+### `asyncio.create_task`（创建异步任务）
+
+`asyncio.create_task()` 把一个协程包装成一个 Task，让它在事件循环中并发运行。创建后无需立即 `await`，Task 会在后台执行。
+
+```python
+async def background_job():
+    await asyncio.sleep(5)
+    print("Done!")
+
+task = asyncio.create_task(background_job())  # 立即返回，后台执行
+```
+
+**为什么在本课中使用：** 测试代码中用 `create_task(bus.dispatch_inbound())` 启动分发循环，使其在后台运行，测试可以继续操作（如等待一段时间后调用 `shutdown()`）。
+
+### 类型别名（Type Alias）
+
+类型别名是给复杂的类型签名起一个简短的名字，提高代码可读性。
+
+```python
+from collections.abc import Callable, Coroutine
+from typing import Any
+
+# 原始类型太长：Callable[[InboundMessage], Coroutine[Any, Any, OutboundMessage | None]]
+# 起个别名：
+InboundHandler = Callable[[InboundMessage], Coroutine[Any, Any, OutboundMessage | None]]
+```
+
+**为什么在本课中使用：** 消息总线需要注册回调处理器，其函数签名很长。定义 `InboundHandler` 和 `OutboundSubscriber` 类型别名后，代码中多次引用这些类型时更加简洁易读。
+
+### `Callable` 和 `Coroutine`（可调用对象与协程类型）
+
+`Callable[[参数类型], 返回类型]` 表示一个可调用对象（函数）。`Coroutine[YieldType, SendType, ReturnType]` 表示一个协程对象。组合使用可以精确描述"接受某些参数并返回协程"的异步函数签名。
+
+```python
+from collections.abc import Callable, Coroutine
+from typing import Any
+
+# 表示：接受一个 str 参数，返回 Coroutine（即 async 函数）
+AsyncStringHandler = Callable[[str], Coroutine[Any, Any, None]]
+```
+
+**为什么在本课中使用：** 消息总线的处理器和订阅者都是异步函数，使用 `Callable` + `Coroutine` 组合类型来精确标注它们的签名，方便 IDE 提供代码补全和类型检查。
+
+### `str | None` 联合类型（PEP 604）
+
+Python 3.10+ 允许用 `X | Y` 语法代替 `Union[X, Y]`，表示一个值可以是 X 类型或 Y 类型。`str | None` 等同于 `Optional[str]`。
+
+```python
+def find_user(name: str) -> str | None:
+    if name == "admin":
+        return "found"
+    return None
+```
+
+**为什么在本课中使用：** `session_key_override: str | None = None` 表示该字段可以是字符串或 None，`reply_to: str | None = None` 同理。配合 `from __future__ import annotations`，即使在 Python 3.9 中也能使用此语法。
+
+### `f-string` 格式化字符串
+
+f-string 是 Python 3.6 引入的字符串格式化语法，在字符串前加 `f`，花括号内可以直接嵌入 Python 表达式。
+
+```python
+name = "Alice"
+age = 30
+print(f"Hello, {name}! You are {age} years old.")
+```
+
+**为什么在本课中使用：** `session_key` 属性中使用 `f"{self.channel}:{self.chat_id}"` 来拼接会话键，比字符串拼接或 `.format()` 更简洁直观。
+
+### `__all__` 模块导出控制
+
+`__all__` 是一个列表，定义了当其他模块使用 `from package import *` 时，哪些名字会被导出。它也是一种文档约定，声明模块的公共 API。
+
+```python
+# mypackage/__init__.py
+from .module_a import ClassA
+from .module_b import ClassB
+
+__all__ = ["ClassA", "ClassB"]
+```
+
+**为什么在本课中使用：** `ultrabot/bus/__init__.py` 中用 `__all__` 明确声明包的公共接口为 `InboundMessage`、`OutboundMessage` 和 `MessageBus`，让使用者清楚知道该用哪些类。
+
+### `asyncio.run`（运行异步代码的入口）
+
+`asyncio.run()` 是启动异步程序的标准入口，它创建一个新的事件循环，运行传入的协程直到完成，然后关闭事件循环。
+
+```python
+import asyncio
+
+async def main():
+    print("Hello from async!")
+
+asyncio.run(main())
+```
+
+**为什么在本课中使用：** 测试函数是普通的同步函数（pytest 默认），但需要测试异步代码。用 `asyncio.run(_run())` 在同步测试中运行异步逻辑。
+
+### `try / except` 异常处理与重试模式
+
+`try/except` 用来捕获和处理异常。配合循环使用可以实现重试逻辑：多次尝试，每次失败后记录错误，全部失败后执行兜底操作。
+
+```python
+for attempt in range(1, 4):
+    try:
+        do_something()
+        break  # 成功就退出循环
+    except Exception as e:
+        print(f"Attempt {attempt} failed: {e}")
+```
+
+**为什么在本课中使用：** `_process_with_retries` 方法对每条消息最多重试 `max_retries` 次，全部失败后将消息放入死信队列，确保单条消息的异常不会导致整个系统崩溃。

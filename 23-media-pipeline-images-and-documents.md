@@ -648,3 +648,269 @@ Saved: test.png (58 bytes)
 > **前述课程：** (1-4) LLM 聊天、流式传输、工具、工具集 · (5-8) 配置、提供者、Anthropic、CLI · (9-12) 会话、熔断器、消息总线、安全 · (13-16) 通道、网关 · (17-19) 专家、Web 界面 · (20-23) 定时任务、守护进程、记忆、媒体
 
 ---
+
+## 本课使用的 Python 知识
+
+### `from __future__ import annotations`
+
+这是一个特殊的导入语句，让 Python 把所有类型注解当作字符串处理（延迟求值），支持在较早版本的 Python 中使用新式类型语法。
+
+```python
+from __future__ import annotations
+
+def fetch(url: str, max_size: int = 0) -> dict[str, Any]:
+    ...
+```
+
+**为什么在本课中使用：** 代码中大量使用 `str | None`、`dict[str, Any]` 等新式类型注解，这一行确保兼容 Python 3.9+。
+
+### `urllib.parse.urlparse` URL 解析
+
+`urlparse()` 将一个 URL 字符串拆解为各组成部分（协议、主机名、端口、路径等），方便逐个检查和处理。
+
+```python
+from urllib.parse import urlparse
+
+result = urlparse("https://example.com:8080/path/file.png?q=1")
+print(result.scheme)    # "https"
+print(result.hostname)  # "example.com"
+print(result.port)      # 8080
+print(result.path)      # "/path/file.png"
+```
+
+**为什么在本课中使用：** SSRF 防护需要检查 URL 的主机名是否是私有 IP（如 `127.0.0.1`、`10.x.x.x`），`urlparse` 可以从 URL 中准确提取主机名进行判断。
+
+### `httpx.AsyncClient` 异步 HTTP 客户端
+
+`httpx` 是一个现代的 Python HTTP 库，`AsyncClient` 支持异步请求，可以在异步框架中无缝使用。支持流式下载、自动重定向等。
+
+```python
+import httpx
+
+async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
+    response = await client.get("https://example.com/data")
+    print(response.status_code)
+```
+
+**为什么在本课中使用：** 从外部 URL 下载媒体文件时需要异步 HTTP 请求。`httpx` 的 `AsyncClient` 支持流式下载（`client.stream()`），避免大文件一次性占满内存。
+
+### `async with` 异步上下文管理器
+
+`async with` 用于管理需要异步初始化和清理的资源。进入时执行异步初始化，退出时自动异步释放资源。
+
+```python
+async with httpx.AsyncClient() as client:
+    # client 在这里可用
+    response = await client.get(url)
+# 离开 with 块后，client 自动关闭
+```
+
+**为什么在本课中使用：** HTTP 客户端和流式响应都需要在使用完毕后正确关闭连接。`async with` 确保即使发生异常，资源也能被正确释放。
+
+### `async for` 异步迭代
+
+`async for` 用于遍历异步可迭代对象——每次迭代可能涉及 I/O 等待（如逐块读取网络数据）。
+
+```python
+async with client.stream("GET", url) as response:
+    async for chunk in response.aiter_bytes(chunk_size=8192):
+        data += chunk  # 每次读取 8KB
+```
+
+**为什么在本课中使用：** 下载大文件时使用流式读取，`async for` 逐块接收数据，边下载边检查是否超过大小限制，避免内存爆炸。
+
+### `io.BytesIO` 内存中的字节流
+
+`BytesIO` 把一个字节串包装成类文件对象，可以传给任何接受文件的函数（如 `Image.open()`、`PdfReader()`），而无需真正写入磁盘。
+
+```python
+import io
+from PIL import Image
+
+image_data = b'\x89PNG...'  # 一些图片字节
+img = Image.open(io.BytesIO(image_data))
+print(img.size)  # (800, 600)
+```
+
+**为什么在本课中使用：** 图片和 PDF 数据以 `bytes` 形式从网络获取，需要用 `BytesIO` 包装后才能传给 Pillow 和 pypdf 进行处理。
+
+### Pillow (`PIL`) 图片处理库
+
+Pillow 是 Python 最常用的图片处理库，提供打开、缩放、旋转、格式转换、压缩等功能。
+
+```python
+from PIL import Image, ImageOps
+
+img = Image.open("photo.jpg")
+img = ImageOps.exif_transpose(img)  # 根据 EXIF 信息自动旋转
+img = img.resize((800, 600), Image.LANCZOS)  # 高质量缩放
+img.save("output.jpg", quality=75, optimize=True)
+```
+
+**为什么在本课中使用：** 用户上传的图片可能过大，需要缩放和压缩以适应 LLM 的输入限制。Pillow 的自适应缩放网格尝试不同尺寸和质量组合，找到满足大小要求的最佳方案。
+
+### `pypdf.PdfReader` PDF 解析
+
+`pypdf` 是一个纯 Python 的 PDF 处理库，可以提取文本、元数据和图片信息，无需安装额外系统依赖。
+
+```python
+from pypdf import PdfReader
+import io
+
+reader = PdfReader(io.BytesIO(pdf_bytes))
+for page in reader.pages:
+    text = page.extract_text()
+    print(text)
+```
+
+**为什么在本课中使用：** 媒体管道需要处理用户上传的 PDF 文档，提取其中的文本内容供 LLM 分析。
+
+### `uuid.uuid4()` 生成唯一标识符
+
+`uuid.uuid4()` 生成一个随机的 UUID（通用唯一标识符），几乎不可能重复，常用于生成文件名、数据库主键等。
+
+```python
+import uuid
+
+media_id = uuid.uuid4().hex[:12]  # 取前 12 个十六进制字符
+print(media_id)  # 例如 "a3f8b2c1d4e5"
+```
+
+**为什么在本课中使用：** `MediaStore` 用 UUID 前缀为每个保存的文件生成唯一 ID（如 `a3f8b2c1d4e5_photo.jpg`），防止文件名冲突。
+
+### `@dataclass` 数据类
+
+`@dataclass` 装饰器自动生成 `__init__`、`__repr__` 等方法，适合定义纯数据容器。
+
+```python
+from dataclasses import dataclass, field
+
+@dataclass
+class PdfContent:
+    text: str = ""
+    pages: int = 0
+    images: list[dict] = field(default_factory=list)
+```
+
+**为什么在本课中使用：** `PdfContent` 用数据类定义，清晰地描述 PDF 提取结果的结构（文本、页数、图片列表、元数据）。
+
+### `@staticmethod` 静态方法
+
+`@staticmethod` 定义不依赖实例（`self`）的方法，逻辑上属于类但不需要访问实例属性。
+
+```python
+class MediaStore:
+    @staticmethod
+    def _sanitize_filename(name: str) -> str:
+        safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+        return safe[:100] or "file"
+```
+
+**为什么在本课中使用：** `_sanitize_filename()` 和 `_detect_mime()` 是通用工具函数，不需要访问 `MediaStore` 的实例状态，定义为静态方法更清晰。
+
+### `bytes` 切片与魔术字节检测
+
+`bytes` 类型支持切片操作（类似字符串），可以用来检查文件开头的几个字节以判断文件类型。每种文件格式都有特定的"魔术字节"签名。
+
+```python
+data = b'\x89PNG\r\n\x1a\n...'
+
+if data[:8] == b'\x89PNG\r\n\x1a\n':
+    mime = "image/png"
+elif data[:3] == b'\xff\xd8\xff':
+    mime = "image/jpeg"
+elif data[:4] == b'%PDF':
+    mime = "application/pdf"
+```
+
+**为什么在本课中使用：** 仅靠文件扩展名判断类型不可靠（用户可能改名），通过检查文件头部的魔术字节可以准确识别真实文件类型。
+
+### `try / except ImportError` 可选依赖延迟导入
+
+在函数内部用 `try/except ImportError` 导入可选库，如果库未安装则抛出友好的提示信息。这样应用在没有某个库时仍能启动，只是相关功能不可用。
+
+```python
+def _get_pillow():
+    try:
+        from PIL import Image
+        return Image, True
+    except ImportError:
+        return None, False
+```
+
+**为什么在本课中使用：** Pillow 和 pypdf 是可选依赖——如果用户不需要图片或 PDF 功能，不安装也不影响其他功能。延迟导入让应用优雅降级。
+
+### `pathlib.Path` 面向对象的路径操作
+
+`Path` 提供丰富的文件系统操作：`.write_bytes()`、`.read_bytes()`、`.unlink()`（删除文件）、`.iterdir()`（列出目录内容）、`.stat()`（获取文件信息）等。
+
+```python
+from pathlib import Path
+
+path = Path("/tmp/media/photo.jpg")
+path.write_bytes(image_data)
+print(path.stat().st_size)   # 文件大小
+print(path.stat().st_mtime)  # 最后修改时间
+path.unlink()                # 删除文件
+```
+
+**为什么在本课中使用：** `MediaStore` 需要保存、读取、删除和清理文件。`Path` 的方法如 `.write_bytes()`、`.iterdir()`、`.unlink()` 让文件操作简洁直观。
+
+### `str.isalnum()` 字符检查与生成器表达式
+
+`str.isalnum()` 检查字符是否为字母或数字。配合生成器表达式可以在一行内完成字符过滤。
+
+```python
+name = "bad file!@#.txt"
+safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in name)
+print(safe)  # "bad_file___.txt"
+```
+
+**为什么在本课中使用：** 用户上传的文件名可能包含特殊字符，`_sanitize_filename()` 用字符检查把不安全字符替换为下划线，防止路径注入等安全问题。
+
+### `dict` 字面量和扩展名映射表
+
+Python 的字典字面量 `{key: value, ...}` 可以用来创建查找表（lookup table），实现 O(1) 的快速查找。
+
+```python
+ext_map = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".pdf": "application/pdf",
+}
+mime = ext_map.get(".png", "application/octet-stream")
+```
+
+**为什么在本课中使用：** MIME 类型检测的回退方案是根据文件扩展名查找对应的 MIME 类型，字典映射表让查找快速且代码清晰。
+
+### `pytest.fixture` 和 `pytest.raises` 测试工具
+
+`@pytest.fixture` 提供测试的准备/清理逻辑。`pytest.raises` 验证代码是否抛出了预期的异常。
+
+```python
+import pytest
+
+@pytest.fixture
+def store(tmp_path):
+    return MediaStore(base_dir=tmp_path / "media")
+
+def test_size_limit(store):
+    store.max_size_bytes = 100
+    with pytest.raises(ValueError, match="too large"):
+        store.save(b"x" * 200, "big.bin")
+```
+
+**为什么在本课中使用：** 测试文件大小限制时，需要验证超大文件确实被拒绝并抛出 `ValueError`，`pytest.raises` 正好用于这种"应该报错"的场景。
+
+### `loguru` 第三方日志库
+
+`loguru` 提供简洁的日志 API，支持 `{}` 占位符格式化，比标准库 `logging` 更易用。
+
+```python
+from loguru import logger
+
+logger.debug("Fetched media: {} ({} bytes)", url, size)
+logger.warning("Could not reduce to target size")
+```
+
+**为什么在本课中使用：** 媒体管道的各个环节（获取、缩放、存储、清理）需要记录详细日志用于调试和监控。

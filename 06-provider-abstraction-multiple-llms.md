@@ -640,3 +640,310 @@ deepseek = OpenAICompatProvider(
 - `ProviderRegistry` 将提供者名称映射到规格
 
 ---
+
+## 本课使用的 Python 知识
+
+### `from __future__ import annotations`
+
+这是 Python 的**延迟注解求值**特性。正常情况下，Python 在定义函数时就会解析类型注解，这可能导致「类还没定义完就被引用」的错误。加上这行后，所有注解都变成字符串，直到真正需要时才解析。
+
+```python
+from __future__ import annotations
+
+class Node:
+    # 没有 future annotations，这里会报错，因为 Node 还没定义完
+    def add_child(self, child: Node) -> None:
+        pass
+```
+
+**本课为什么用它：** 代码中大量使用了 `str | None`、`list[dict[str, Any]]` 等现代类型注解语法，`from __future__ import annotations` 保证这些注解在 Python 3.9 及以下版本也不会报错。
+
+### `abc.ABC` 和 `@abstractmethod`（抽象基类）
+
+`ABC`（Abstract Base Class）是 Python 中定义「接口」的方式。继承了 `ABC` 的类不能直接实例化，必须由子类实现所有 `@abstractmethod` 标记的方法。
+
+```python
+from abc import ABC, abstractmethod
+
+class Animal(ABC):
+    @abstractmethod
+    def speak(self) -> str:
+        """子类必须实现这个方法"""
+
+class Dog(Animal):
+    def speak(self) -> str:
+        return "Woof!"
+
+# animal = Animal()  # 报错！不能实例化抽象类
+dog = Dog()           # 可以，因为实现了 speak()
+```
+
+**本课为什么用它：** `LLMProvider` 作为抽象基类定义了所有 LLM 后端的统一接口（`chat()`），不同的提供者（OpenAI、Anthropic 等）只需继承并实现这个方法，调用方不需要关心底层用的是哪个提供者。
+
+### `@dataclass` 和 `field(default_factory=...)`（数据类）
+
+`@dataclass` 装饰器自动为类生成 `__init__`、`__repr__`、`__eq__` 等方法，省去大量样板代码。`field(default_factory=list)` 用于可变默认值（如列表、字典），避免多个实例共享同一个对象。
+
+```python
+from dataclasses import dataclass, field
+
+@dataclass
+class Config:
+    name: str
+    tags: list[str] = field(default_factory=list)  # 每个实例有自己的列表
+    temperature: float = 0.7                        # 不可变类型可以直接给默认值
+
+c1 = Config(name="test")
+c2 = Config(name="demo")
+c1.tags.append("a")
+print(c2.tags)  # [] — 不会被 c1 影响
+```
+
+**本课为什么用它：** `LLMResponse`、`GenerationSettings`、`ToolCallRequest`、`ProviderSpec` 都是纯数据载体，用 `@dataclass` 可以简洁地定义它们。`LLMResponse` 的 `tool_calls` 和 `usage` 字段用了 `default_factory`，确保每个响应对象都有自己独立的列表和字典。
+
+### `@dataclass(frozen=True)`（不可变数据类）
+
+`frozen=True` 让数据类的实例在创建后不可修改，类似 `namedtuple`。如果尝试修改属性，会抛出 `FrozenInstanceError`。
+
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Point:
+    x: int
+    y: int
+
+p = Point(1, 2)
+# p.x = 3  # 报错！FrozenInstanceError
+```
+
+**本课为什么用它：** `ProviderSpec` 用了 `frozen=True`，因为提供者规格（名称、关键词、默认 URL 等）是注册时就确定的常量，不应该被运行时修改。
+
+### `typing` 模块 — `Any`、`Callable`、`Coroutine`
+
+`typing` 模块提供类型注解工具。`Any` 表示任意类型；`Callable` 描述可调用对象的签名；`Coroutine` 描述协程的类型。
+
+```python
+from typing import Any, Callable, Coroutine
+
+# Any：接受任意类型
+def process(data: Any) -> None: ...
+
+# Callable[[参数类型], 返回类型]
+def apply(func: Callable[[int], str], value: int) -> str:
+    return func(value)
+
+# 描述一个异步回调函数
+callback: Callable[[str], Coroutine[Any, Any, None]]
+```
+
+**本课为什么用它：** `chat()` 方法的参数 `messages: list[dict[str, Any]]` 用 `Any` 表示消息字典的值可以是任何类型。`on_content_delta` 回调用 `Callable[[str], Coroutine[Any, Any, None]]` 精确描述了「接收一个字符串、返回一个协程」的签名。
+
+### `str | None` 联合类型（Python 3.10+ 语法）
+
+Python 3.10 引入了用 `|` 表示联合类型的简洁语法，替代了旧的 `Optional[str]` 或 `Union[str, None]`。
+
+```python
+# Python 3.10+ 写法
+def greet(name: str | None = None) -> str:
+    return f"Hello, {name or 'World'}!"
+
+# 等价于旧写法
+from typing import Optional
+def greet(name: Optional[str] = None) -> str: ...
+```
+
+**本课为什么用它：** 代码中大量使用 `str | None` 表示可选参数，如 `api_key: str | None = None`、`content: str | None = None`，比 `Optional` 写法更简洁直观。
+
+### `async/await` 和 `asyncio`（异步编程）
+
+`async def` 定义协程函数，`await` 暂停当前协程等待另一个协程完成。`asyncio` 是 Python 的异步 I/O 框架，`asyncio.sleep()` 是非阻塞的等待。
+
+```python
+import asyncio
+
+async def fetch_data() -> str:
+    await asyncio.sleep(1)  # 非阻塞等待 1 秒
+    return "data"
+
+async def main():
+    result = await fetch_data()
+    print(result)
+
+asyncio.run(main())
+```
+
+**本课为什么用它：** LLM API 调用是网络 I/O 操作，可能需要等待数秒。使用 `async/await` 可以在等待一个请求返回时处理其他任务，特别是在重试逻辑中 `await asyncio.sleep(delay)` 不会阻塞整个程序。
+
+### `async for`（异步迭代）
+
+`async for` 用于遍历异步可迭代对象，每次迭代都可能涉及异步操作（如等待网络数据）。
+
+```python
+async for chunk in stream:
+    print(chunk)
+```
+
+**本课为什么用它：** `chat_stream()` 中使用 `async for chunk in stream` 逐块接收 LLM 的流式响应，每个 chunk 到达时立即处理，实现实时输出效果。
+
+### `@property`（属性装饰器）和延迟初始化
+
+`@property` 把方法变成属性访问的样子，调用时不需要加括号。常用于延迟初始化（lazy initialization）——第一次访问时才创建对象。
+
+```python
+class Database:
+    def __init__(self):
+        self._conn = None
+
+    @property
+    def connection(self):
+        if self._conn is None:
+            self._conn = create_connection()  # 第一次访问时才连接
+        return self._conn
+
+db = Database()
+db.connection  # 不加括号，像访问属性一样
+```
+
+**本课为什么用它：** `OpenAICompatProvider.client` 属性使用延迟初始化，只有在第一次实际调用 API 时才创建 `AsyncOpenAI` 客户端，避免了在导入或构造时就建立网络连接。
+
+### `@staticmethod`（静态方法）
+
+`@staticmethod` 定义不需要访问实例（`self`）或类（`cls`）的方法，本质上是放在类命名空间里的普通函数。
+
+```python
+class MathHelper:
+    @staticmethod
+    def add(a: int, b: int) -> int:
+        return a + b
+
+MathHelper.add(1, 2)  # 不需要创建实例
+```
+
+**本课为什么用它：** `_is_transient_error()`、`_map_response()`、`_assemble_tool_calls()` 都是纯逻辑计算，不依赖任何实例状态，用 `@staticmethod` 明确表达这一点，也方便在测试中直接调用（如 `LLMProvider._is_transient_error(exc)`）。
+
+### `frozenset`（不可变集合）
+
+`frozenset` 是不可变版本的 `set`，创建后不能添加或删除元素。它可以用作字典的键或放入另一个集合中。
+
+```python
+ALLOWED_CODES = frozenset({200, 201, 204})
+print(429 in ALLOWED_CODES)  # False — 查找速度 O(1)
+```
+
+**本课为什么用它：** `_TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})` 定义了可重试的 HTTP 状态码。用 `frozenset` 而非 `set` 表示这是一个常量，不会被意外修改，同时 `in` 查找的时间复杂度为 O(1)。
+
+### `getattr()` 动态属性访问
+
+`getattr(obj, name, default)` 在运行时通过字符串名称获取对象的属性。如果属性不存在，返回默认值而不是报错。
+
+```python
+class Error:
+    status_code = 429
+
+exc = Error()
+status = getattr(exc, "status_code", None)  # 429
+missing = getattr(exc, "headers", None)      # None（不存在，返回默认值）
+```
+
+**本课为什么用它：** `_is_transient_error()` 需要检查异常对象是否带有 `status_code` 或 `status` 属性。不同的 HTTP 库抛出的异常类型不同，用 `getattr` 可以安全地尝试获取，不存在就返回 `None`。
+
+### `any()` 与生成器表达式
+
+`any()` 接受一个可迭代对象，只要其中有一个元素为真就返回 `True`。配合生成器表达式可以高效地检测匹配。
+
+```python
+markers = ("error", "timeout", "refused")
+message = "connection timeout occurred"
+has_match = any(m in message for m in markers)  # True
+```
+
+**本课为什么用它：** `_is_transient_error()` 用 `any(marker in message for marker in _TRANSIENT_MARKERS)` 检查错误消息中是否包含任何一个瞬态错误标记词，简洁且在找到第一个匹配后就停止搜索。
+
+### `**kwargs` 字典解包
+
+`**kwargs` 将字典解包为关键字参数传给函数。可以动态构建参数列表。
+
+```python
+params = {"model": "gpt-4", "temperature": 0.7}
+# 等价于 client.create(model="gpt-4", temperature=0.7)
+response = client.create(**params)
+```
+
+**本课为什么用它：** `chat()` 方法先将参数构建为 `kwargs` 字典，再用 `**kwargs` 传给 `client.chat.completions.create()`。这允许有条件地添加参数（如只有在有工具时才加 `tools` 键）。
+
+### OOP 继承与 `super().__init__()`
+
+子类通过 `super()` 调用父类的方法，确保初始化链正确执行。
+
+```python
+class Base:
+    def __init__(self, name: str):
+        self.name = name
+
+class Child(Base):
+    def __init__(self, name: str, age: int):
+        super().__init__(name)  # 先初始化父类
+        self.age = age
+```
+
+**本课为什么用它：** `OpenAICompatProvider` 继承 `LLMProvider`，在 `__init__` 中通过 `super().__init__()` 调用父类来初始化 `api_key`、`api_base`、`generation` 等公共属性，自己只添加 `_default_model` 和 `_client` 等子类特有的属性。
+
+### `json.dumps()` 和 `json.loads()`（JSON 序列化）
+
+`json.dumps()` 将 Python 对象转为 JSON 字符串，`json.loads()` 将 JSON 字符串解析为 Python 对象。`ensure_ascii=False` 允许输出非 ASCII 字符（如中文）。
+
+```python
+import json
+
+data = {"name": "你好", "value": 42}
+text = json.dumps(data, ensure_ascii=False)  # '{"name": "你好", "value": 42}'
+parsed = json.loads(text)                     # {'name': '你好', 'value': 42}
+```
+
+**本课为什么用它：** 工具调用的参数在 OpenAI API 中以 JSON 字符串传输，需要用 `json.dumps()` 序列化和 `json.loads()` 反序列化。`try/except json.JSONDecodeError` 处理 LLM 可能返回的格式不正确的 JSON。
+
+### `try/except` 异常处理
+
+`try/except` 捕获并处理异常，防止程序崩溃。可以捕获特定类型的异常。
+
+```python
+try:
+    result = json.loads(text)
+except json.JSONDecodeError:
+    result = {"_raw": text}  # 解析失败时的回退方案
+```
+
+**本课为什么用它：** 重试逻辑中用 `try/except Exception` 捕获 API 调用失败；JSON 解析时用 `try/except json.JSONDecodeError` 处理 LLM 返回的不合法 JSON。这保证了程序在遇到错误时能优雅降级而不是直接崩溃。
+
+### `pytest` 和 `unittest.mock`（测试框架）
+
+`pytest` 是 Python 最流行的测试框架。`unittest.mock` 提供 `AsyncMock`（模拟异步函数）、`MagicMock`（通用模拟对象）和 `patch`（临时替换对象）。
+
+```python
+import pytest
+from unittest.mock import AsyncMock
+
+async def test_something():
+    mock_api = AsyncMock(return_value="hello")
+    result = await mock_api()
+    assert result == "hello"
+    mock_api.assert_called_once()
+```
+
+**本课为什么用它：** 测试不需要真实的 API 调用。`AsyncMock` 模拟异步 LLM 客户端，`assert` 验证数据类行为、序列化结果、错误检测逻辑等是否正确。
+
+### 延迟导入（函数内部 `import`）
+
+将 `import` 语句放在函数内部而不是文件顶部，实现按需加载。
+
+```python
+@property
+def client(self):
+    if self._client is None:
+        import openai  # 只有真正需要时才导入
+        self._client = openai.AsyncOpenAI(...)
+    return self._client
+```
+
+**本课为什么用它：** `openai` 库只在实际创建客户端时才导入。这样即使用户没有安装 `openai` 包，只要不使用 `OpenAICompatProvider`，程序也不会报错。这对支持多个可选后端的提供者系统非常重要。

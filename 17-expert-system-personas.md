@@ -710,3 +710,254 @@ Search "coder": ['my-coder']
 O(1) 的 slug 查找、部门分组以及跨名称、描述和自动提取标签的相关性评分全文搜索。
 
 ---
+
+## 本课使用的 Python 知识
+
+### `@dataclass` 与 `slots=True`（数据类）
+
+`@dataclass` 装饰器自动为类生成 `__init__`、`__repr__`、`__eq__` 等方法，让你只需声明字段即可。加上 `slots=True` 参数会让 Python 使用 `__slots__` 而非字典来存储属性，减少每个实例的内存占用。
+
+```python
+from dataclasses import dataclass
+
+@dataclass(slots=True)
+class Person:
+    name: str
+    age: int = 0
+
+p = Person(name="Alice", age=30)
+print(p)  # Person(name='Alice', age=30)
+```
+
+**为什么在本课中使用：** `ExpertPersona` 是本课的核心数据结构，包含十几个字段。`@dataclass` 省去了手写冗长构造函数的工作。`slots=True` 在加载数百个专家人设时显著降低内存占用。
+
+### `field(default_factory=list)`（数据类字段工厂）
+
+在 `@dataclass` 中，可变类型（如列表、字典）的默认值不能直接写成 `tags: list = []`（会被所有实例共享），必须使用 `field(default_factory=list)` 为每个实例创建独立的副本。
+
+```python
+from dataclasses import dataclass, field
+
+@dataclass
+class Config:
+    items: list[str] = field(default_factory=list)  # 每个实例独立的列表
+
+a = Config()
+b = Config()
+a.items.append("x")
+print(b.items)  # []  -- b 不受 a 的影响
+```
+
+**为什么在本课中使用：** `ExpertPersona` 的 `tags` 字段是一个列表，每个专家有自己独立的标签集合。使用 `field(default_factory=list)` 确保每个人设实例的标签列表互不干扰。
+
+### `from pathlib import Path`（现代路径操作）
+
+`pathlib.Path` 是 Python 3 引入的面向对象的文件路径操作接口，比传统的 `os.path` 字符串拼接更直观、更安全。
+
+```python
+from pathlib import Path
+
+p = Path("/home/user/docs")
+file = p / "notes.md"         # 用 / 拼接路径
+text = file.read_text("utf-8")  # 直接读取文件
+print(file.stem)               # "notes"（无扩展名的文件名）
+print(file.parent.name)        # "docs"（父目录名）
+```
+
+**为什么在本课中使用：** 人设文件散布在目录树中，代码需要遍历目录（`rglob("*.md")`）、获取文件名（`path.stem` 作为 slug）、读取内容（`read_text`）。`Path` 让这些操作简洁又可读。
+
+### `re.compile()` 与正则表达式
+
+`re` 模块提供正则表达式支持。`re.compile()` 将正则模式预编译为对象，可重复使用以提高性能。`re.DOTALL` 标志让 `.` 也匹配换行符。
+
+```python
+import re
+
+pattern = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+match = pattern.match(text)
+if match:
+    content = match.group(1)  # 提取第一个捕获组
+```
+
+**为什么在本课中使用：** 人设文件的 YAML frontmatter 被 `---` 分隔符包裹，正则表达式用于精确匹配和提取这部分内容。预编译的正则在反复解析数百个文件时比每次调用 `re.match()` 更高效。
+
+### `@property`（属性装饰器）
+
+`@property` 让方法像属性一样被访问，不需要加括号。常用于定义只读的计算属性。
+
+```python
+class User:
+    def __init__(self, first, last):
+        self.first = first
+        self.last = last
+
+    @property
+    def full_name(self):
+        return f"{self.first} {self.last}"
+
+u = User("张", "三")
+print(u.full_name)  # "张 三"，无需 u.full_name()
+```
+
+**为什么在本课中使用：** `ExpertPersona` 的 `system_prompt` 属性直接返回 `raw_body`，让调用者用 `persona.system_prompt` 获取 LLM 系统提示词，语义清晰且不暴露内部字段名。
+
+### `frozenset`（不可变集合）
+
+`frozenset` 是不可变的集合类型，创建后不能增删元素。适合用作常量集合或字典的键。
+
+```python
+STOP_WORDS = frozenset(["的", "了", "是", "在"])
+
+if "的" in STOP_WORDS:  # O(1) 查找
+    print("是停用词")
+```
+
+**为什么在本课中使用：** `_STOP_WORDS` 存储中文停用词（"的"、"了"、"是"等），在标签提取时需要快速判断字符是否应被排除。`frozenset` 的查找速度为 O(1)，且不可变保证了全局常量的安全性。
+
+### `defaultdict(list)`（带默认值的字典）
+
+`collections.defaultdict` 在访问不存在的键时自动创建默认值，省去了手动检查和初始化的代码。
+
+```python
+from collections import defaultdict
+
+groups = defaultdict(list)
+groups["fruits"].append("apple")   # 自动创建空列表
+groups["fruits"].append("banana")
+print(groups)  # {'fruits': ['apple', 'banana']}
+```
+
+**为什么在本课中使用：** `ExpertRegistry` 用 `defaultdict(list)` 建立部门索引——当注册新专家时，如果部门键不存在会自动创建空列表，代码更简洁，无需判断键是否存在。
+
+### `tuple` 返回值（多值返回）
+
+Python 函数可以返回一个元组来同时传递多个值，调用者通过解包赋值来接收。
+
+```python
+def parse(text):
+    header = text[:10]
+    body = text[10:]
+    return header, body  # 返回元组
+
+h, b = parse("HEADER____This is the body")  # 解包
+```
+
+**为什么在本课中使用：** `_parse_frontmatter()` 返回 `(meta, body)` 元组，将 frontmatter 元数据和 markdown 正文一次性返回。调用者用 `meta, body = _parse_frontmatter(text)` 优雅地获取两个结果。
+
+### 字符串方法链（`splitlines`、`find`、`strip`）
+
+Python 字符串提供丰富的内置方法：`splitlines()` 按行分割，`find()` 查找子串位置，`strip()` 去除首尾空白。
+
+```python
+text = "  key: value  "
+colon = text.find(":")        # 5
+key = text[:colon].strip()    # "key"
+val = text[colon+1:].strip()  # "value"
+```
+
+**为什么在本课中使用：** YAML frontmatter 解析器逐行扫描内容，使用 `splitlines()` 分行、`find(":")` 定位键值分隔符、`strip()` 清理空白——完全不需要外部 YAML 库，保持依赖最小化。
+
+### `sorted()` 与 `key=lambda`（自定义排序）
+
+`sorted()` 返回排序后的新列表。`key` 参数接受一个函数，指定排序依据。`lambda` 是匿名函数的简写。
+
+```python
+students = [("Bob", 85), ("Alice", 92), ("Charlie", 78)]
+by_score = sorted(students, key=lambda s: -s[1])  # 按分数降序
+print(by_score)  # [('Alice', 92), ('Bob', 85), ('Charlie', 78)]
+```
+
+**为什么在本课中使用：** `ExpertRegistry` 的搜索功能计算每个人设的相关性分数，然后用 `sorted(scored, key=lambda x: -x[0])` 按分数降序排列，返回最匹配的结果。`list_all()` 用 `key=lambda p: (p.department, p.slug)` 先按部门再按 slug 双重排序。
+
+### `__len__`、`__contains__`、`__repr__`（魔术方法）
+
+Python 的魔术方法（也叫 dunder 方法）让你的自定义类可以与内置操作符和函数无缝配合。
+
+```python
+class MyList:
+    def __init__(self):
+        self._items = []
+
+    def __len__(self):
+        return len(self._items)  # 支持 len(obj)
+
+    def __contains__(self, item):
+        return item in self._items  # 支持 item in obj
+
+    def __repr__(self):
+        return f"<MyList size={len(self._items)}>"  # 支持 print(obj)
+```
+
+**为什么在本课中使用：** `ExpertRegistry` 实现了这三个魔术方法，让它可以像内置容器一样使用：`len(registry)` 获取专家数量、`"slug" in registry` 检查专家是否存在、`print(registry)` 显示友好的描述。
+
+### `@staticmethod`（静态方法）
+
+`@staticmethod` 定义不需要访问实例（`self`）或类（`cls`）的方法。它本质上是一个放在类命名空间中的普通函数。
+
+```python
+class MathHelper:
+    @staticmethod
+    def add(a, b):
+        return a + b
+
+print(MathHelper.add(1, 2))  # 3，不需要创建实例
+```
+
+**为什么在本课中使用：** `ExpertRegistry._score_match()` 是一个纯计算函数，只需要接收参数就能工作，不需要访问注册表实例。定义为 `@staticmethod` 清楚地表达了这个意图。
+
+### `filter(None, iterable)`（过滤空值）
+
+`filter(None, iterable)` 会过滤掉所有布尔值为假的元素（`None`、`""`、`0`、`[]` 等），只保留"真值"元素。
+
+```python
+values = ["hello", "", None, "world", ""]
+cleaned = list(filter(None, values))
+print(cleaned)  # ['hello', 'world']
+```
+
+**为什么在本课中使用：** `_extract_tags()` 用 `filter(None, [persona.name, persona.description, persona.department])` 将非空字段拼接成标签来源文本，自动跳过空字符串字段。
+
+### CJK 字符正则匹配（Unicode 范围）
+
+通过正则表达式的 Unicode 范围 `[\u4e00-\u9fff]` 可以匹配所有常见的中日韩汉字。
+
+```python
+import re
+
+text = "Hello 前端开发者 World"
+cjk_chunks = re.findall(r"[\u4e00-\u9fff]+", text)
+print(cjk_chunks)  # ['前端开发者']
+```
+
+**为什么在本课中使用：** 专家人设包含大量中文内容，标签提取需要同时处理英文单词和中文字符。通过 `[\u4e00-\u9fff]+` 匹配中文片段，再生成单字和双字组（bigram），实现高效的中文搜索索引。
+
+### `__all__`（模块导出控制）
+
+在 `__init__.py` 中定义 `__all__` 列表，明确指定模块对外公开的名称。当用户执行 `from module import *` 时，只有 `__all__` 中列出的名称会被导入。
+
+```python
+# mypackage/__init__.py
+from .core import Engine
+from .utils import helper
+
+__all__ = ["Engine"]  # from mypackage import * 只导入 Engine
+```
+
+**为什么在本课中使用：** `ultrabot/experts/__init__.py` 通过 `__all__` 明确导出 `ExpertPersona`、`ExpertRegistry` 等公共接口，同时隐藏内部实现细节，为使用者提供清晰的 API 边界。
+
+### `pytest` 测试框架与 `@pytest.fixture`
+
+`pytest` 是 Python 最流行的测试框架。`@pytest.fixture` 定义可复用的测试准备代码（如创建临时目录、初始化对象），测试函数通过参数名自动注入。
+
+```python
+import pytest
+
+@pytest.fixture
+def sample_data():
+    return {"name": "test", "value": 42}
+
+def test_name(sample_data):  # 自动注入 fixture
+    assert sample_data["name"] == "test"
+```
+
+**为什么在本课中使用：** 测试用例需要反复创建 `ExpertRegistry` 并注册人设。`tmp_path` fixture 提供临时目录用于写入测试文件，避免测试之间的状态污染。`pytest` 的断言自动生成清晰的错误信息。

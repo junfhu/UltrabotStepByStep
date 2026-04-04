@@ -695,3 +695,299 @@ python -m pytest tests/test_session9.py -v
 不传 `sessions` 参数时行为与之前完全一致。对话现在可以在重启后存活。
 
 ---
+
+## 本课使用的 Python 知识
+
+### `from __future__ import annotations`（延迟注解求值）
+
+让 Python 把类型注解当作字符串处理，不在定义时立即求值，兼容 `str | None` 等现代语法。
+
+```python
+from __future__ import annotations
+
+def get_session(key: str | None = None) -> Session | None:
+    ...
+```
+
+**本课为什么用它：** 代码中大量使用 `Session | None`、`dict[str, Session]` 等现代类型注解，这行保证在 Python 3.9 中也能正常工作。
+
+### `@dataclass` 与 `field(default_factory=...)`（数据类）
+
+`@dataclass` 自动生成 `__init__`、`__repr__` 等方法。`field(default_factory=...)` 用于可变默认值，确保每个实例都有自己独立的对象。
+
+```python
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+@dataclass
+class Session:
+    session_id: str
+    messages: list[dict] = field(default_factory=list)  # 每个实例独立的列表
+    created_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+```
+
+**本课为什么用它：** `Session` 数据类存储对话历史。`messages` 用 `default_factory=list` 确保每个会话有自己独立的消息列表；`created_at` 用 `default_factory=lambda: datetime.now(timezone.utc)` 在创建时自动生成当前 UTC 时间戳。如果直接写 `messages: list = []`，所有 Session 实例会共享同一个列表——这是 Python 数据类的经典陷阱。
+
+### `dataclasses.asdict()`（数据类转字典）
+
+`asdict()` 将数据类实例递归地转换为纯字典，方便序列化为 JSON。
+
+```python
+from dataclasses import asdict, dataclass
+
+@dataclass
+class Point:
+    x: int
+    y: int
+
+p = Point(1, 2)
+d = asdict(p)  # {"x": 1, "y": 2}
+```
+
+**本课为什么用它：** `Session.to_dict()` 用 `asdict(self)` 将整个会话对象转为字典，再对 `datetime` 字段做 ISO-8601 格式化，最终可以用 `json.dumps()` 保存到磁盘。
+
+### `datetime` 与 `timezone.utc`（时间处理）
+
+`datetime.now(timezone.utc)` 获取当前 UTC 时间；`.isoformat()` 转为 ISO-8601 字符串（如 `"2024-01-15T08:30:00+00:00"`）；`.fromisoformat()` 从字符串还原。
+
+```python
+from datetime import datetime, timezone
+
+now = datetime.now(timezone.utc)         # 当前 UTC 时间
+text = now.isoformat()                   # "2024-01-15T08:30:00+00:00"
+restored = datetime.fromisoformat(text)  # 还原为 datetime 对象
+```
+
+**本课为什么用它：** 会话的 `created_at` 和 `last_active` 都用 UTC 时间戳。序列化到 JSON 时用 `.isoformat()` 转为字符串，从磁盘加载时用 `.fromisoformat()` 还原。始终使用 UTC 可以避免时区混乱。
+
+### `@classmethod`（类方法）和工厂模式
+
+`@classmethod` 定义一个接收类本身（`cls`）而不是实例（`self`）的方法。常用作替代构造函数（工厂方法）。
+
+```python
+class Session:
+    @classmethod
+    def from_dict(cls, data: dict) -> Session:
+        """从字典重建 Session（替代构造函数）"""
+        data = dict(data)  # 不修改原始数据
+        data["created_at"] = datetime.fromisoformat(data["created_at"])
+        return cls(**data)  # 等价于 Session(**data)
+
+# 使用
+session = Session.from_dict(loaded_data)
+```
+
+**本课为什么用它：** `Session.from_dict()` 是一个工厂方法，从磁盘加载的字典数据中重建 Session 对象。用 `cls(**data)` 而不是 `Session(**data)` 确保子类继承时也能正确工作。
+
+### `@staticmethod`（静态方法）
+
+不依赖实例或类的方法，用 `@staticmethod` 声明。
+
+```python
+class Session:
+    @staticmethod
+    def _estimate_tokens(content: str) -> int:
+        return max(len(content) // 4, 1)
+```
+
+**本课为什么用它：** `_estimate_tokens()` 是一个纯计算函数（约 4 个字符 = 1 个 token），不需要访问任何实例属性，用 `@staticmethod` 明确这一点。
+
+### `asyncio.Lock`（异步锁）
+
+`asyncio.Lock` 是协程安全的互斥锁，确保同一时间只有一个协程可以访问被保护的资源。通过 `async with` 使用。
+
+```python
+import asyncio
+
+lock = asyncio.Lock()
+
+async def safe_update(data, key, value):
+    async with lock:          # 获取锁
+        data[key] = value     # 安全地修改共享数据
+    # 退出 async with 后自动释放锁
+```
+
+**本课为什么用它：** `SessionManager` 可能被多个协程同时调用（如多个通道同时处理消息）。`async with self._lock` 确保对 `_sessions` 字典的读写操作是原子的，避免竞态条件导致数据损坏或重复创建会话。
+
+### `pathlib.Path` — 文件操作
+
+`Path` 提供面向对象的文件系统操作。
+
+```python
+from pathlib import Path
+
+path = Path("/data/sessions")
+path.mkdir(parents=True, exist_ok=True)  # 创建目录（含父目录）
+file = path / "session.json"
+file.write_text('{"id": "test"}', encoding="utf-8")  # 写文件
+content = file.read_text(encoding="utf-8")             # 读文件
+if file.exists():
+    file.unlink()   # 删除文件
+```
+
+**本课为什么用它：** `SessionManager` 用 `Path` 管理会话文件：`.mkdir(parents=True, exist_ok=True)` 创建 sessions 目录；`.write_text()` 和 `.read_text()` 读写 JSON 文件；`.unlink()` 删除过期会话文件；`/` 运算符拼接路径。
+
+### `json.dumps()` 和 `json.loads()`（JSON 序列化）
+
+`json.dumps()` 将 Python 对象转为 JSON 字符串（`indent=2` 美化格式），`json.loads()` 反向解析。
+
+```python
+import json
+
+data = {"session_id": "user:42", "messages": []}
+text = json.dumps(data, ensure_ascii=False, indent=2)
+# {
+#   "session_id": "user:42",
+#   "messages": []
+# }
+restored = json.loads(text)
+```
+
+**本课为什么用它：** 会话数据以格式化的 JSON 文件存储在磁盘上。`ensure_ascii=False` 保证中文内容不会被转义为 `\uXXXX`；`indent=2` 让文件可读，方便调试。
+
+### `list.clear()`、`list.pop()`、`list()` 浅拷贝
+
+`list.clear()` 清空列表；`list.pop(index)` 移除并返回指定位置的元素；`list(original)` 创建浅拷贝。
+
+```python
+messages = [{"role": "system"}, {"role": "user"}, {"role": "assistant"}]
+
+# 浅拷贝 — 新列表，但内部字典仍是同一个引用
+copy = list(messages)
+
+# pop — 移除并返回指定位置的元素
+oldest = messages.pop(1)   # 移除索引 1 的元素，返回 {"role": "user"}
+
+# clear — 清空列表
+messages.clear()           # messages 变为 []
+```
+
+**本课为什么用它：** `Session.clear()` 用 `self.messages.clear()` 清空对话历史。`trim()` 用 `self.messages.pop(0)` 或 `self.messages.pop(1)` 移除最旧的消息（跳过系统提示词）。`get_messages()` 用 `list(self.messages)` 返回浅拷贝，防止外部代码修改内部状态。
+
+### `max()` 和 `min()` 内置函数
+
+`max()` 返回最大值，`min()` 返回最小值。可以用 `key` 参数指定比较的依据。
+
+```python
+# 简单用法
+result = max(len(content) // 4, 1)  # 至少返回 1
+
+# 带 key 参数 — 找到最不活跃的会话
+oldest_key = min(
+    sessions,
+    key=lambda k: sessions[k].last_active,
+)
+```
+
+**本课为什么用它：** `_estimate_tokens()` 用 `max(..., 1)` 确保 token 估算值至少为 1。`_enforce_max_sessions_unlocked()` 用 `min(..., key=lambda k: ...)` 找到最旧的不活跃会话进行淘汰。
+
+### `for/else`（循环的 else 子句）
+
+`for` 循环正常结束（没有被 `break` 中断）时执行 `else` 块。
+
+```python
+for attempt in range(3):
+    if try_connect():
+        print("成功!")
+        break
+else:
+    # 循环正常结束（3次都没成功）
+    print("全部尝试失败")
+```
+
+**本课为什么用它：** `Agent.run()` 的工具循环用 `for iteration in range(max_iterations)` 限制迭代次数。如果循环正常结束（达到最大迭代次数），`else` 子句返回一条「已达最大迭代次数」的消息。如果在循环中 `break`（LLM 返回了最终回复），`else` 不会执行。
+
+### `async def` + `await`（异步方法改造）
+
+将同步方法改为 `async def` 后，内部可以用 `await` 调用其他异步方法，但调用者也必须用 `await` 来调用它。
+
+```python
+# 改造前（同步）
+def run(self, message: str) -> str:
+    result = self._execute_tool(tc)  # 如果这也是异步的，就有问题
+
+# 改造后（异步）
+async def run(self, message: str) -> str:
+    session = await self._sessions.get_or_create(key)  # 可以 await
+    result = await self._execute_tool(tc)               # 也可以 await
+    await self._sessions.save(key)                      # 还可以 await
+```
+
+**本课为什么用它：** `Agent.run()` 从同步改为 `async`，因为 `SessionManager.get_or_create()` 和 `.save()` 都是异步方法（内部使用了 `asyncio.Lock`）。`async` 让整个工具循环可以无缝地调用异步的会话管理和工具执行。
+
+### `dict.pop(key, default)`（安全移除）
+
+`dict.pop(key, default)` 移除并返回指定键的值，如果键不存在则返回默认值。
+
+```python
+sessions = {"a": session_a, "b": session_b}
+removed = sessions.pop("a", None)  # 移除 "a"，返回 session_a
+missing = sessions.pop("c", None)  # "c" 不存在，返回 None（不报错）
+```
+
+**本课为什么用它：** `SessionManager.delete()` 用 `self._sessions.pop(session_key, None)` 从内存缓存中移除会话。`None` 作为默认值确保即使会话不在缓存中也不会抛出 `KeyError`。
+
+### `tempfile.TemporaryDirectory`（临时目录）
+
+`TemporaryDirectory` 创建一个临时目录，退出 `with` 块时自动清理。常用于测试。
+
+```python
+import tempfile
+from pathlib import Path
+
+with tempfile.TemporaryDirectory() as tmp:
+    path = Path(tmp) / "test.txt"
+    path.write_text("hello")
+    print(path.read_text())  # "hello"
+# 退出 with 后，tmp 目录及其中所有文件都被自动删除
+```
+
+**本课为什么用它：** 测试 `SessionManager` 的持久化功能需要一个临时目录来存放 JSON 文件。`TemporaryDirectory` 确保每次测试都有干净的环境，测试结束后自动清理，不会在文件系统中留下垃圾。
+
+### `loguru.logger`（第三方日志库）
+
+`loguru` 是一个比标准库 `logging` 更易用的日志库。不需要配置 handler，开箱即用。
+
+```python
+from loguru import logger
+
+logger.info("New session created: {}", session_key)
+logger.debug("Trimmed {} message(s)", removed)
+logger.warning("Session expired: {}", key)
+logger.exception("Failed to load session from {}", path)
+```
+
+**本课为什么用它：** `SessionManager` 在创建、加载、修剪、淘汰会话时记录日志。`logger.exception()` 自动附带异常堆栈信息。这些日志在调试持久化问题时非常有用。
+
+### 列表推导式（List Comprehension）
+
+列表推导式是创建列表的简洁语法，比 `for` 循环 + `append` 更 Pythonic。
+
+```python
+# 找出所有过期的会话键
+expired = [
+    key for key, s in self._sessions.items()
+    if (now - s.last_active).total_seconds() > self.ttl_seconds
+]
+```
+
+**本课为什么用它：** `cleanup()` 用列表推导式一行代码筛选出所有超过 TTL 的过期会话键，比写一个 `for` 循环加 `if` 判断加 `append` 要简洁得多。
+
+### `Callable` 类型注解（回调函数类型）
+
+`Callable[[参数类型], 返回类型]` 描述一个可调用对象的签名。
+
+```python
+from typing import Callable
+
+def run(
+    self,
+    user_message: str,
+    on_content_delta: Callable[[str], None] | None = None,
+) -> str:
+    ...
+```
+
+**本课为什么用它：** `Agent.run()` 的 `on_content_delta` 参数是一个回调函数，当 LLM 流式返回每个文本片段时被调用。`Callable[[str], None]` 明确说明它接收一个字符串参数、不返回值。

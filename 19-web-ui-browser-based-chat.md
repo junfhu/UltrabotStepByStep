@@ -489,3 +489,294 @@ Registered routes:
 适配器类将 Pydantic 配置 schema 桥接到每个组件期望的接口，无需修改核心代码。
 
 ---
+
+## 本课使用的 Python 知识
+
+### FastAPI 框架与路由装饰器
+
+FastAPI 是一个高性能的 Python Web 框架，基于类型提示自动生成文档。路由装饰器（如 `@app.get()`、`@app.post()`）将 URL 路径映射到处理函数。
+
+```python
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/hello")
+async def hello():
+    return {"message": "你好世界"}
+
+@app.post("/items")
+async def create_item(name: str):
+    return {"name": name}
+```
+
+**为什么在本课中使用：** ultrabot 的 Web 界面需要提供多个 REST API（健康检查、提供者状态、会话管理、工具列表等）。FastAPI 的装饰器语法让每个端点的定义简洁明了，且自动生成 OpenAPI 文档。
+
+### `pydantic.BaseModel`（数据验证模型）
+
+Pydantic 的 `BaseModel` 自动对输入数据进行类型验证和转换。FastAPI 使用它来验证请求体和生成 API 文档。
+
+```python
+from pydantic import BaseModel
+
+class ChatRequest(BaseModel):
+    message: str
+    session_key: str = "web:default"  # 带默认值
+
+# FastAPI 自动验证 JSON 请求体
+@app.post("/chat")
+async def chat(body: ChatRequest):
+    return {"echo": body.message}
+```
+
+**为什么在本课中使用：** `ChatRequest` 和 `ChatResponse` 模型确保客户端发送的数据格式正确（如 `message` 必须是字符串）。如果格式不对，FastAPI 会自动返回 422 错误，无需手动校验。
+
+### WebSocket（实时双向通信）
+
+WebSocket 是一种全双工通信协议，服务器和客户端可以随时互相发送消息，不像 HTTP 需要"请求-响应"配对。FastAPI 原生支持 WebSocket。
+
+```python
+from fastapi import WebSocket, WebSocketDisconnect
+
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    try:
+        while True:
+            data = await ws.receive_text()  # 接收客户端消息
+            await ws.send_json({"echo": data})  # 发送给客户端
+    except WebSocketDisconnect:
+        print("客户端断开连接")
+```
+
+**为什么在本课中使用：** 聊天界面需要实时流式显示 LLM 的回复（一个字一个字地出现）。WebSocket 让服务器可以在生成过程中不断推送内容增量（`content_delta`），实现打字机效果。
+
+### 应用工厂模式（`create_app()`）
+
+工厂函数封装了应用的创建和配置过程，返回一个完全配置好的应用实例。这种模式方便测试（可以创建不同配置的应用）和延迟初始化。
+
+```python
+def create_app(config_path=None):
+    app = FastAPI(title="My App")
+
+    @app.get("/health")
+    async def health():
+        return {"status": "ok"}
+
+    return app
+
+# 生产环境
+app = create_app("/etc/myapp/config.json")
+
+# 测试环境
+test_app = create_app("/tmp/test_config.json")
+```
+
+**为什么在本课中使用：** `create_app()` 将 FastAPI 应用的创建、中间件配置、路由注册和生命周期管理封装在一个函数中。测试代码可以直接调用 `create_app()` 获取应用实例进行路由检查，无需启动服务器。
+
+### 适配器模式与鸭子类型
+
+适配器模式将一个接口转换为另一个接口。Python 的鸭子类型（"如果它像鸭子一样走路和叫，那它就是鸭子"）让适配器只需实现目标接口的方法，无需显式继承。
+
+```python
+class LegacyPrinter:
+    def print_text(self, text):
+        print(text)
+
+class ModernPrinterAdapter:
+    """适配旧接口到新接口"""
+    def __init__(self, legacy):
+        self._legacy = legacy
+
+    def output(self, text):  # 新接口期望的方法名
+        self._legacy.print_text(text)
+```
+
+**为什么在本课中使用：** `_ProviderManagerConfig` 和 `_StreamableProviderManager` 是适配器类。Pydantic 配置模型与 `ProviderManager` 期望的字典接口不匹配，适配器在两者之间"翻译"，无需修改任何一方的代码。
+
+### `__getattr__()`（属性代理）
+
+当访问对象上不存在的属性时，Python 会调用 `__getattr__()` 方法。它常用于实现代理模式——将未知属性的访问转发给被包装的对象。
+
+```python
+class Proxy:
+    def __init__(self, target):
+        self._target = target
+
+    def __getattr__(self, name):
+        return getattr(self._target, name)  # 转发到目标对象
+
+import json
+proxy = Proxy(json)
+data = proxy.loads('{"a": 1}')  # 实际调用 json.loads
+```
+
+**为什么在本课中使用：** `_StreamableProviderManager` 包装了 `ProviderManager`，增加了 `chat_stream_with_retry` 方法。对于其他方法（如 `health_check`），通过 `__getattr__` 自动转发到原始 `ProviderManager`，无需逐个复制。
+
+### `global` 关键字（全局变量）
+
+`global` 关键字声明函数内的变量是全局变量，而非局部变量。这让函数可以修改模块级别的变量。
+
+```python
+_counter = 0
+
+def increment():
+    global _counter  # 声明要修改全局变量
+    _counter += 1
+
+increment()
+print(_counter)  # 1
+```
+
+**为什么在本课中使用：** `_startup()` 事件处理器需要初始化模块级别的 `_config`、`_agent` 等全局变量，让后续的路由处理函数可以访问。在 FastAPI 的生命周期回调中，`global` 是设置共享状态的简单方式。
+
+### 递归函数（`_redact_api_keys`）
+
+递归函数是调用自身的函数，适合处理嵌套数据结构（如字典中嵌套字典、列表中嵌套字典等）。每次递归处理一层嵌套。
+
+```python
+def deep_process(obj):
+    if isinstance(obj, dict):
+        return {k: deep_process(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [deep_process(item) for item in obj]
+    return obj  # 基本类型直接返回（递归终止条件）
+```
+
+**为什么在本课中使用：** 配置对象可能有多层嵌套（提供者配置中嵌套 API 密钥），`_redact_api_keys()` 递归遍历所有层级，将名称包含 `key`、`secret`、`token` 的字段值替换为 `"***"`，防止敏感信息泄露。
+
+### `isinstance()` 类型检查
+
+`isinstance(obj, type)` 检查对象是否是指定类型的实例。比 `type(obj) == type` 更好，因为它也支持子类检查。
+
+```python
+value = [1, 2, 3]
+
+if isinstance(value, list):
+    print("是列表")
+elif isinstance(value, dict):
+    print("是字典")
+elif isinstance(value, str):
+    print("是字符串")
+```
+
+**为什么在本课中使用：** `_redact_api_keys()` 需要判断当前处理的节点类型——字典需要检查键名、列表需要递归每个元素、其他类型直接返回。`isinstance` 让这种类型分支清晰安全。
+
+### `any()` 内置函数
+
+`any()` 接受一个可迭代对象，只要其中任何一个元素为真就返回 `True`。常用于检查是否存在至少一个满足条件的元素。
+
+```python
+words = ["key", "secret", "token"]
+field_name = "api_key"
+
+if any(w in field_name.lower() for w in words):
+    print("这是敏感字段！")
+```
+
+**为什么在本课中使用：** 判断字典键名是否包含敏感词（`key`、`secret`、`token`），`any(w in k.lower() for w in ("key", "secret", "token"))` 简洁地表达了"只要命中任意一个敏感词就遮蔽"的逻辑。
+
+### 字典推导式
+
+字典推导式可以在一行中创建或转换字典，语法为 `{key_expr: value_expr for item in iterable}`。
+
+```python
+original = {"a": 1, "b": 2, "c": 3}
+doubled = {k: v * 2 for k, v in original.items()}
+print(doubled)  # {'a': 2, 'b': 4, 'c': 6}
+```
+
+**为什么在本课中使用：** `_redact_api_keys()` 用字典推导式遍历配置字典的每个键值对，对敏感键进行遮蔽处理，一行代码完成整个字典的转换。`_ProviderManagerConfig` 也用字典推导式构建提供者配置。
+
+### 闭包（Closure）
+
+闭包是指内部函数"记住"了外部函数作用域中变量的函数。即使外部函数已返回，内部函数仍能访问这些变量。
+
+```python
+def make_greeter(name):
+    def greet():
+        print(f"Hello, {name}!")  # 引用外层变量 name
+    return greet
+
+say_hi = make_greeter("Alice")
+say_hi()  # Hello, Alice!
+```
+
+**为什么在本课中使用：** WebSocket 处理循环中，每条消息创建新的 `_on_content_delta` 和 `_on_tool_hint` 闭包函数。这些闭包"捕获"了当前的 `websocket` 对象，使回调函数能够将内容增量发送到正确的 WebSocket 连接。
+
+### `@app.on_event("startup")`（生命周期事件）
+
+FastAPI 的生命周期事件让你在应用启动或关闭时执行初始化/清理代码。`startup` 事件在第一个请求之前触发。
+
+```python
+@app.on_event("startup")
+async def on_startup():
+    print("应用启动，初始化数据库连接...")
+    # 连接数据库、加载配置等
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    print("应用关闭，清理资源...")
+```
+
+**为什么在本课中使用：** `_startup()` 在服务器启动时加载配置文件、初始化所有子系统（提供者管理器、会话管理器、工具注册表、安全守卫、代理）。确保所有组件在接受请求前已就绪。
+
+### `CORSMiddleware`（跨域资源共享中间件）
+
+CORS 中间件处理浏览器的跨域安全限制。没有它，从不同域名/端口的前端页面无法调用 API。
+
+```python
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],       # 允许所有来源
+    allow_methods=["*"],       # 允许所有 HTTP 方法
+    allow_headers=["*"],       # 允许所有请求头
+)
+```
+
+**为什么在本课中使用：** Web 前端（`index.html`）可能从不同端口或域名访问 API。`CORSMiddleware` 配置为 `allow_origins=["*"]` 允许来自任何来源的请求，方便开发和调试。
+
+### `Path(__file__).resolve().parent`（模块路径定位）
+
+`__file__` 是当前 Python 文件的路径。配合 `Path` 的 `resolve()`（转为绝对路径）和 `parent`（获取父目录），可以定位相对于模块的文件。
+
+```python
+from pathlib import Path
+
+_MODULE_DIR = Path(__file__).resolve().parent
+_STATIC_DIR = _MODULE_DIR / "static"
+_TEMPLATE_DIR = _MODULE_DIR / "templates"
+```
+
+**为什么在本课中使用：** 静态文件（`index.html`、CSS、JS）存放在 `ultrabot/webui/static/` 目录中。通过 `Path(__file__).resolve().parent / "static"` 定位静态文件目录，无论从哪里启动应用都能正确找到。
+
+### `uvicorn`（ASGI 服务器）
+
+`uvicorn` 是一个高性能的 ASGI 服务器，用于运行 FastAPI 等异步 Web 应用。`uvicorn.run()` 是最简单的启动方式。
+
+```python
+import uvicorn
+
+app = create_app()
+uvicorn.run(app, host="0.0.0.0", port=8080)
+```
+
+**为什么在本课中使用：** `run_server()` 用 `uvicorn.run()` 启动 FastAPI 应用，监听指定的主机和端口。uvicorn 支持异步处理和 WebSocket，是 FastAPI 的标准搭配。
+
+### `unittest.mock`（测试模拟）
+
+`unittest.mock` 提供 `MagicMock` 和 `AsyncMock` 等工具，用于在测试中替换真实的依赖。`patch` 可以临时替换模块中的对象。
+
+```python
+from unittest.mock import AsyncMock, MagicMock
+
+mock_agent = AsyncMock()
+mock_agent.run.return_value = "模拟回复"
+
+result = await mock_agent.run(user_message="test")
+print(result)  # "模拟回复"
+```
+
+**为什么在本课中使用：** 测试 Web 界面时不需要真正连接 LLM 服务。`AsyncMock` 可以模拟 `Agent.run()` 的返回值，让测试只验证 API 路由和数据处理逻辑，不依赖外部服务。

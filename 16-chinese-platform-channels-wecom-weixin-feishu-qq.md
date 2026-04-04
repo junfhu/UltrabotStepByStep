@@ -451,3 +451,255 @@ channels:
 （HTTP 长轮询 + AES 加密）、飞书（在专用线程中运行 SDK WebSocket）
 和 QQ（botpy SDK）— 全部实现相同的 `BaseChannel` 接口。
 智能体和消息总线完全不感知底层平台。
+
+---
+
+## 本课使用的 Python 知识
+
+### `from __future__ import annotations`（延迟类型注解求值）
+
+这是一个特殊的导入语句，让 Python 将所有类型注解当作字符串处理，而不是立即求值。这样你就可以在类型注解中使用尚未定义的类名，也能让代码在较低版本的 Python 上兼容新的类型语法。
+
+```python
+from __future__ import annotations
+
+class MyClass:
+    def method(self) -> MyClass:  # 不会报错，因为注解被延迟求值
+        return self
+```
+
+**为什么在本课中使用：** 四个通道类中的方法签名引用了 `OutboundMessage`、`MessageBus` 等尚未导入的类型，延迟求值避免了循环导入和前向引用错误。
+
+### `async def` / `await`（异步编程）
+
+`async def` 定义一个协程函数，`await` 用于等待另一个协程完成。异步编程让程序在等待网络 I/O 时不会阻塞，从而同时处理多个任务。
+
+```python
+import asyncio
+
+async def fetch_data():
+    await asyncio.sleep(1)  # 模拟网络请求，不阻塞其他任务
+    return "数据"
+
+async def main():
+    result = await fetch_data()
+    print(result)
+
+asyncio.run(main())
+```
+
+**为什么在本课中使用：** 每个通道都需要同时监听消息和发送回复，异步编程让多个通道可以在同一个事件循环中高效并发运行，而不需要为每个通道创建独立的线程。
+
+### `collections.OrderedDict`（有序字典用作消息去重缓存）
+
+`OrderedDict` 是一种记住插入顺序的字典。在本课中它被用作有界的去重缓存——新消息 ID 从末尾添加，当缓存超过上限时从头部淘汰最旧的条目。
+
+```python
+from collections import OrderedDict
+
+cache = OrderedDict()
+
+def is_duplicate(msg_id):
+    if msg_id in cache:
+        return True
+    cache[msg_id] = None
+    while len(cache) > 1000:  # 最多保留 1000 条
+        cache.popitem(last=False)  # 淘汰最旧的
+    return False
+```
+
+**为什么在本课中使用：** 消息平台可能重复推送同一条消息（网络重连、SDK 重试等），`OrderedDict` 提供了一种简单高效的去重机制，同时自动淘汰旧记录以控制内存使用。
+
+### `TYPE_CHECKING`（条件导入模式）
+
+`typing.TYPE_CHECKING` 是一个在运行时为 `False`、仅在类型检查工具（如 mypy）运行时为 `True` 的常量。配合 `if TYPE_CHECKING:` 使用，可以只在类型检查时导入某些模块，避免运行时的循环导入。
+
+```python
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from heavy_module import HeavyClass  # 仅类型检查时导入
+
+def process(obj: "HeavyClass") -> None:  # 用字符串注解
+    pass
+```
+
+**为什么在本课中使用：** 通道类需要引用 `OutboundMessage` 和 `MessageBus` 的类型，但运行时不应该立刻导入这些模块（避免循环依赖和不必要的加载），所以使用 `TYPE_CHECKING` 模式。
+
+### `importlib.util.find_spec()`（可选依赖检测）
+
+`importlib.util.find_spec()` 检查某个模块是否可被导入，而不实际导入它。返回 `None` 表示该模块未安装。
+
+```python
+import importlib.util
+
+if importlib.util.find_spec("requests") is not None:
+    print("requests 库已安装")
+else:
+    print("requests 库未安装")
+```
+
+**为什么在本课中使用：** 四个通道各依赖不同的 SDK（`wecom-aibot-sdk`、`lark-oapi`、`botpy` 等），用户不一定全部安装。通过 `find_spec()` 检测 SDK 是否存在，未安装时给出友好的错误提示而不是崩溃。
+
+### 类继承与 `super().__init__()`（面向对象编程）
+
+Python 的类继承让子类可以复用父类的代码。`super().__init__()` 调用父类的构造函数，确保父类的初始化逻辑被正确执行。
+
+```python
+class Animal:
+    def __init__(self, name):
+        self.name = name
+
+class Dog(Animal):
+    def __init__(self, name, breed):
+        super().__init__(name)  # 调用 Animal 的 __init__
+        self.breed = breed
+```
+
+**为什么在本课中使用：** 四个通道类（`WecomChannel`、`WeixinChannel`、`FeishuChannel`、`QQChannel`）都继承自 `BaseChannel`，共享同一个接口。`super().__init__(config, bus)` 确保基类的配置和消息总线被正确初始化。
+
+### `@property`（属性装饰器）
+
+`@property` 让一个方法看起来像属性一样被访问（不需要加括号调用），常用于提供只读属性或计算属性。
+
+```python
+class Circle:
+    def __init__(self, radius):
+        self._radius = radius
+
+    @property
+    def area(self):
+        return 3.14159 * self._radius ** 2
+
+c = Circle(5)
+print(c.area)  # 像访问属性一样，不需要 c.area()
+```
+
+**为什么在本课中使用：** 每个通道类用 `@property` 定义 `name` 属性（如 `"wecom"`、`"feishu"`），让外部代码可以用 `channel.name` 直接获取通道名称，简洁且只读。
+
+### `threading.Thread`（多线程）
+
+`threading.Thread` 创建一个新的操作系统线程来并行执行代码。当某个第三方库有自己的事件循环，与主程序的 asyncio 循环冲突时，可以在单独的线程中运行它。
+
+```python
+import threading
+
+def background_work():
+    print("在后台线程中运行")
+
+t = threading.Thread(target=background_work, daemon=True)
+t.start()  # 启动线程
+```
+
+**为什么在本课中使用：** 飞书的 `lark-oapi` SDK 自带事件循环，与 ultrabot 主循环冲突。解决方案是在一个 `daemon=True` 的后台线程中运行飞书 SDK 的 WebSocket 客户端。
+
+### `asyncio.run_coroutine_threadsafe()`（跨线程调度协程）
+
+当你在一个普通线程中需要调用主线程的异步函数时，`run_coroutine_threadsafe()` 可以将协程安全地提交到另一个线程的事件循环中执行。
+
+```python
+import asyncio, threading
+
+async def async_handler(data):
+    print(f"处理: {data}")
+
+loop = asyncio.new_event_loop()
+
+def sync_callback(data):
+    # 从普通线程中安全调度到 asyncio 事件循环
+    asyncio.run_coroutine_threadsafe(async_handler(data), loop)
+```
+
+**为什么在本课中使用：** 飞书 SDK 在后台线程中收到消息后触发同步回调 `_on_message_sync`，需要将异步处理任务安全地提交回主 asyncio 事件循环，`run_coroutine_threadsafe` 正是桥接同步线程和异步循环的关键。
+
+### 工厂函数动态创建类（`_make_bot_class`）
+
+Python 允许在函数内部定义类，并将外部变量"绑定"到这个类中。这种工厂模式可以动态创建与特定实例关联的子类。
+
+```python
+def make_handler(greeting):
+    class Handler:
+        def handle(self):
+            print(greeting)  # 使用外层函数的变量
+    return Handler
+
+MyHandler = make_handler("你好")
+h = MyHandler()
+h.handle()  # 输出: 你好
+```
+
+**为什么在本课中使用：** QQ 的 `botpy` SDK 要求用户子类化 `botpy.Client` 来处理事件。`_make_bot_class(channel)` 在函数内部创建一个绑定到当前 `QQChannel` 实例的子类，这样事件处理方法就能直接访问通道实例。
+
+### `httpx.AsyncClient`（异步 HTTP 客户端）
+
+`httpx` 是一个现代的 Python HTTP 库，`AsyncClient` 是其异步版本，支持连接池、超时配置、重定向跟随等功能。
+
+```python
+import httpx
+
+async def fetch():
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get("https://example.com")
+        return response.text
+```
+
+**为什么在本课中使用：** 微信通道使用 HTTP 长轮询而非 WebSocket，需要反复发起 HTTP 请求。`httpx.AsyncClient` 提供了连接复用和可配置的超时（45 秒读取、30 秒连接），非常适合长轮询场景。
+
+### `try` / `except ImportError`（优雅降级的可选导入）
+
+通过捕获 `ImportError` 异常来尝试导入一个库，如果失败则回退到替代方案。这让代码可以在多种环境下工作。
+
+```python
+try:
+    from fast_json import loads  # 优先使用更快的库
+except ImportError:
+    from json import loads       # 回退到标准库
+```
+
+**为什么在本课中使用：** 微信通道的 AES 解密同时支持 `pycryptodome` 和 `cryptography` 两个加密库。代码先尝试导入 `Crypto.Cipher`，如果不存在就回退到 `cryptography`，用户只需安装任一个即可。
+
+### `bytes` 类型与加密操作
+
+`bytes` 是 Python 中表示二进制数据的类型，在加密、网络传输和文件操作中广泛使用。`base64` 模块用于在二进制数据和文本之间转换。
+
+```python
+import base64
+
+raw_key = b"0123456789abcdef"       # 16 字节的密钥
+b64_key = base64.b64encode(raw_key)  # 编码为 base64
+decoded = base64.b64decode(b64_key)  # 解码回原始字节
+assert decoded == raw_key
+```
+
+**为什么在本课中使用：** 微信媒体文件使用 AES-128-ECB 加密，密钥以 base64 编码存储。解密过程需要将 base64 密钥解码为 16 字节的 `bytes`，然后用于 AES 解密操作。
+
+### `importlib.import_module()`（动态模块导入）
+
+`importlib.import_module()` 可以在运行时根据字符串名称导入模块，而不需要在代码顶部写死 `import` 语句。
+
+```python
+import importlib
+
+mod = importlib.import_module("json")
+data = mod.loads('{"key": "value"}')
+print(data)  # {'key': 'value'}
+```
+
+**为什么在本课中使用：** 测试代码需要验证四个通道模块是否可以正确导入和加载。通过 `importlib.import_module("ultrabot.channels.wecom")` 动态导入模块，配合 `hasattr` 检查类是否存在，实现了灵活的模块可用性测试。
+
+### `issubclass()` 与 `hasattr()`（内省机制）
+
+`issubclass(A, B)` 检查类 A 是否是类 B 的子类；`hasattr(obj, name)` 检查对象是否拥有某个属性或方法。这些是 Python 的内省（introspection）功能。
+
+```python
+class Base:
+    pass
+
+class Child(Base):
+    pass
+
+print(issubclass(Child, Base))  # True
+print(hasattr(Child, "__init__"))  # True
+```
+
+**为什么在本课中使用：** 测试代码用 `issubclass(WeixinChannel, BaseChannel)` 验证通道类确实继承了基类接口，用 `hasattr(mod, "WecomChannel")` 验证模块中存在预期的类——这是接口契约的自动化验证。

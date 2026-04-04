@@ -356,3 +356,279 @@ python -m pytest tests/test_channels_base.py -v
 分块出站消息的 `TelegramChannel`。
 
 ---
+
+## 本课使用的 Python 知识
+
+### `ABC` 和 `@abstractmethod`（抽象基类）
+
+`ABC`（Abstract Base Class）是 Python 中定义"接口"的方式。继承 `ABC` 的类可以用 `@abstractmethod` 标记必须由子类实现的方法。如果子类没有实现所有抽象方法，实例化时会直接报错。
+
+```python
+from abc import ABC, abstractmethod
+
+class Animal(ABC):
+    @abstractmethod
+    def speak(self) -> str:
+        ...
+
+class Dog(Animal):
+    def speak(self) -> str:
+        return "Woof!"
+
+# animal = Animal()  # TypeError: 不能实例化抽象类
+dog = Dog()           # OK，因为实现了 speak()
+```
+
+**为什么在本课中使用：** `BaseChannel` 定义了所有消息通道的契约（`name`、`start()`、`stop()`、`send()`）。任何新通道（Telegram、Discord、Slack 等）都必须实现这些方法，否则无法被实例化。这确保了所有通道具有一致的接口。
+
+### `@property` + `@abstractmethod`（抽象属性）
+
+`@property` 和 `@abstractmethod` 可以组合使用，要求子类必须定义某个属性。
+
+```python
+from abc import ABC, abstractmethod
+
+class Channel(ABC):
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        ...
+
+class Telegram(Channel):
+    @property
+    def name(self) -> str:
+        return "telegram"
+```
+
+**为什么在本课中使用：** `BaseChannel` 要求每个通道子类都提供一个 `name` 属性作为唯一标识符。使用抽象属性而不是普通属性，确保开发者不会忘记定义它。
+
+### `TYPE_CHECKING` 条件导入
+
+`typing.TYPE_CHECKING` 是一个在运行时为 `False`、但在类型检查工具（如 mypy）运行时为 `True` 的常量。配合 `if TYPE_CHECKING:` 使用，可以导入只用于类型注解的模块，避免运行时循环导入。
+
+```python
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from heavy_module import HeavyClass  # 只在类型检查时导入
+
+def process(obj: "HeavyClass") -> None:  # 用字符串引用
+    ...
+```
+
+**为什么在本课中使用：** `base.py` 中 `OutboundMessage` 和 `MessageBus` 只在类型注解中使用，运行时不需要。用 `TYPE_CHECKING` 避免在模块加载时导入它们，减少了模块间的耦合和循环依赖风险。
+
+### `try / except ImportError`（可选依赖检测）
+
+通过 `try/except ImportError` 来检测一个库是否安装，配合一个标志变量记录结果。这种模式让模块在依赖缺失时也能被导入，只在真正使用时才报错。
+
+```python
+try:
+    import telegram
+    _TELEGRAM_AVAILABLE = True
+except ImportError:
+    _TELEGRAM_AVAILABLE = False
+
+def _require_telegram():
+    if not _TELEGRAM_AVAILABLE:
+        raise ImportError("请安装 python-telegram-bot")
+```
+
+**为什么在本课中使用：** `python-telegram-bot` 是可选依赖 — 不是所有用户都需要 Telegram 通道。通过这种模式，即使没安装该库，其他代码也能正常导入 `telegram.py` 模块，只有实际创建 `TelegramChannel` 实例时才会要求安装。
+
+### 类继承和 `super().__init__()`
+
+Python 通过 `class Child(Parent)` 语法实现继承。子类可以用 `super().__init__()` 调用父类的构造函数，确保父类的初始化逻辑被执行。
+
+```python
+class BaseChannel:
+    def __init__(self, config, bus):
+        self.config = config
+        self.bus = bus
+
+class TelegramChannel(BaseChannel):
+    def __init__(self, config, bus):
+        super().__init__(config, bus)  # 先初始化父类
+        self._token = config["token"]  # 再初始化自己的属性
+```
+
+**为什么在本课中使用：** `TelegramChannel` 继承自 `BaseChannel`，需要先调用 `super().__init__(config, bus)` 初始化 `self.config`、`self.bus` 和 `self._running` 等基类属性，然后再设置 Telegram 特有的 `_token`、`_allow_from` 等属性。
+
+### 指数退避重试（Exponential Backoff）
+
+指数退避是一种重试策略：每次失败后等待时间翻倍。第 1 次等 1 秒，第 2 次等 2 秒，第 3 次等 4 秒……这样可以避免在服务暂时不可用时频繁重试造成雪崩。
+
+```python
+import asyncio
+
+async def send_with_retry(max_retries=3, base_delay=1.0):
+    for attempt in range(1, max_retries + 1):
+        try:
+            await do_send()
+            return  # 成功就退出
+        except Exception:
+            if attempt < max_retries:
+                delay = base_delay * (2 ** (attempt - 1))
+                await asyncio.sleep(delay)  # 1s, 2s, 4s...
+    raise Exception("All retries failed")
+```
+
+**为什么在本课中使用：** `BaseChannel.send_with_retry()` 实现了指数退避重试，用于出站消息发送。网络可能暂时不稳定，退避策略给服务器恢复的时间，而不是立即连续重试。
+
+### `asyncio.sleep()`（异步延迟）
+
+`asyncio.sleep()` 让当前协程暂停指定的秒数，期间不阻塞事件循环，其他协程可以继续运行。它跟 `time.sleep()` 的区别是后者会阻塞整个线程。
+
+```python
+import asyncio
+
+async def delayed_greeting():
+    print("请稍等...")
+    await asyncio.sleep(2)  # 等2秒，但不阻塞其他任务
+    print("你好！")
+```
+
+**为什么在本课中使用：** 指数退避重试中需要等待一段时间后再重试。使用 `asyncio.sleep()` 而不是 `time.sleep()`，确保等待期间消息总线和其他通道仍能正常工作。
+
+### 字符串切片（String Slicing）
+
+Python 字符串支持切片操作 `text[start:end]`，可以提取子字符串。配合 `range(0, len(text), step)` 可以把长字符串按固定长度分块。
+
+```python
+text = "ABCDEFGHIJ"
+chunk1 = text[0:4]   # "ABCD"
+chunk2 = text[4:8]   # "EFGH"
+chunk3 = text[8:12]  # "IJ"（超出范围不会报错）
+
+# 通用的分块写法：
+max_len = 4
+chunks = [text[i : i + max_len] for i in range(0, len(text), max_len)]
+```
+
+**为什么在本课中使用：** Telegram 限制单条消息最长 4096 字符。`send()` 方法用 `text[i : i + max_len]` 把长消息分成多个块逐一发送，确保不超过平台限制。
+
+### `range(start, stop, step)` 带步长的范围
+
+`range()` 可以接受第三个参数作为步长，用来生成间隔固定的数字序列。
+
+```python
+for i in range(0, 100, 25):
+    print(i)  # 输出: 0, 25, 50, 75
+```
+
+**为什么在本课中使用：** `range(0, len(text), max_len)` 生成 `0, 4096, 8192, ...` 的序列，作为每个消息块的起始位置，实现了把任意长度文本按 4096 字符分块。
+
+### `dict.get(key, default)`（安全字典访问）
+
+`dict.get()` 在键不存在时返回默认值（默认为 `None`），而不是抛出 `KeyError`。
+
+```python
+config = {"token": "abc123"}
+token = config["token"]          # "abc123"
+allow = config.get("allowFrom")  # None（键不存在，不报错）
+port = config.get("port", 8080)  # 8080（键不存在，返回默认值）
+```
+
+**为什么在本课中使用：** 通道配置中某些字段是可选的（如 `allowFrom`），使用 `config.get("allowFrom")` 在字段缺失时返回 `None` 而不是崩溃。`ChannelManager` 中也用 `ch_cfg.get("enabled", True)` 来获取可选的 enabled 标志。
+
+### 函数内延迟导入（Lazy Import）
+
+在函数体内部使用 `import` 语句，而不是在模块顶部。这样模块只在函数被调用时才被加载。
+
+```python
+async def _handle_message(self, update, context):
+    from ultrabot.bus.events import InboundMessage  # 用到时才导入
+    inbound = InboundMessage(...)
+```
+
+**为什么在本课中使用：** `_handle_message` 方法在函数内部导入 `InboundMessage`，避免了模块顶层的循环依赖。Telegram 模块在导入时不需要加载整个消息总线，只有在实际处理消息时才按需导入。
+
+### `raise` 抛出异常
+
+`raise` 用于主动抛出一个异常。可以抛出内置异常或自定义异常。
+
+```python
+def connect():
+    if not ready:
+        raise RuntimeError("Service not started")
+```
+
+**为什么在本课中使用：** `send()` 方法在 `_app` 为 `None` 时抛出 `RuntimeError`，强制要求先调用 `start()` 才能发送消息。`_require_telegram()` 在库缺失时抛出 `ImportError`，给用户清晰的安装提示。
+
+### `typing.Any`（任意类型）
+
+`Any` 类型表示"任何类型都行"，相当于关闭了对该变量的类型检查。当精确类型不重要或难以表达时使用。
+
+```python
+from typing import Any
+
+self._app: Any = None  # 类型太复杂或来自外部库，先用 Any
+```
+
+**为什么在本课中使用：** `_app` 是 `telegram.ext.Application` 类型，它的泛型参数复杂，且只在 `python-telegram-bot` 安装时才可用。使用 `Any` 既避免了硬依赖，又能让代码通过类型检查。
+
+### `str | int` 联合类型
+
+表示一个值可以是多种类型之一。`str | int` 表示"字符串或整数"。
+
+```python
+async def send_typing(self, chat_id: str | int) -> None:
+    await bot.send_chat_action(chat_id=int(chat_id), ...)
+```
+
+**为什么在本课中使用：** `send_typing()` 的 `chat_id` 参数可能从外部以字符串或整数形式传入，使用 `str | int` 联合类型让方法更灵活，内部统一转换为 `int` 后传给 Telegram API。
+
+### `ChannelManager` 注册中心模式
+
+注册中心模式是一种管理多个同类型组件的设计模式：提供 `register()`、`start_all()`、`stop_all()` 等方法统一管理生命周期。
+
+```python
+class ChannelManager:
+    def __init__(self):
+        self._channels: dict[str, BaseChannel] = {}
+
+    def register(self, channel: BaseChannel) -> None:
+        self._channels[channel.name] = channel
+
+    async def start_all(self) -> None:
+        for name, channel in self._channels.items():
+            await channel.start()
+```
+
+**为什么在本课中使用：** 系统可能有多个通道（Telegram、Discord、Slack）。`ChannelManager` 统一管理它们的注册和生命周期，启动时逐一启动，关闭时逐一停止，并处理各通道的异常。
+
+### 测试中的假对象（Test Double / Fake）
+
+在测试中创建一个继承自抽象基类的简化实现，用于验证基类的逻辑而不依赖真实的外部服务。
+
+```python
+class FakeChannel(BaseChannel):
+    @property
+    def name(self) -> str:
+        return "fake"
+
+    async def start(self) -> None:
+        self._running = True
+
+    async def stop(self) -> None:
+        self._running = False
+
+    async def send(self, message) -> None:
+        self.last_sent = message  # 记录下来供断言检查
+```
+
+**为什么在本课中使用：** 测试不需要真正连接 Telegram 服务器。`FakeChannel` 实现了 `BaseChannel` 的所有抽象方法，让我们可以测试 `ChannelManager` 的生命周期管理和 `send_with_retry()` 的重试逻辑。
+
+### `from __future__ import annotations`（延迟注解评估）
+
+让类型注解在运行时不被求值，支持前向引用和新语法。
+
+```python
+from __future__ import annotations
+
+class BaseChannel(ABC):
+    async def send(self, message: "OutboundMessage") -> None:  # 字符串引用
+        ...
+```
+
+**为什么在本课中使用：** 代码中引用了 `OutboundMessage` 和 `MessageBus` 等类型，但它们在运行时可能还未导入（因为使用了 `TYPE_CHECKING` 条件导入）。延迟注解确保这些字符串形式的类型引用不会在运行时报错。

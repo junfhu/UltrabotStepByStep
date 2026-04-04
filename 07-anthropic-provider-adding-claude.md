@@ -617,3 +617,246 @@ provider = AnthropicProvider(
 一个原生 Anthropic 提供者，处理 OpenAI 和 Anthropic API 之间的所有格式差异。适配器模式意味着我们的 Agent 类不关心它在和哪个 LLM 对话 -- 两个提供者都返回相同的 `LLMResponse` 格式。这直接对应 `ultrabot/providers/anthropic_provider.py`。
 
 ---
+
+## 本课使用的 Python 知识
+
+### `from __future__ import annotations`（延迟注解求值）
+
+让 Python 把所有类型注解当作字符串处理，不在定义时立即求值。这样就可以使用 `str | None` 等 Python 3.10+ 语法，同时兼容更早的版本。
+
+```python
+from __future__ import annotations
+
+def greet(name: str | None = None) -> str:  # 不加 future annotations，3.9 会报错
+    return f"Hello, {name or 'World'}"
+```
+
+**本课为什么用它：** Anthropic 提供者中到处使用 `str | None`、`list[dict[str, Any]]` 等现代注解，这行保证向后兼容。
+
+### `uuid.uuid4()`（生成唯一标识符）
+
+`uuid4()` 生成一个随机的 UUID（通用唯一标识符），每次调用都不一样，冲突概率极低。
+
+```python
+import uuid
+
+unique_id = str(uuid.uuid4())
+print(unique_id)  # 例如 '550e8400-e29b-41d4-a716-446655440000'
+```
+
+**本课为什么用它：** Anthropic 流式响应中的工具调用块可能缺少 `id` 字段。用 `str(uuid.uuid4())` 生成一个备用 ID，确保每个工具调用都有唯一标识符，不会和其他调用混淆。
+
+### `copy.deepcopy()`（深拷贝）
+
+`deepcopy()` 递归地复制一个对象及其所有子对象，修改副本不会影响原始数据。相比之下，`=` 赋值只是引用，`list()` 或 `dict()` 只做浅拷贝。
+
+```python
+from copy import deepcopy
+
+original = [{"a": [1, 2]}, {"b": [3, 4]}]
+shallow = list(original)     # 浅拷贝：内层字典仍是同一个对象
+deep = deepcopy(original)    # 深拷贝：完全独立
+
+deep[0]["a"].append(99)
+print(original[0]["a"])      # [1, 2] — 不受影响
+shallow[0]["a"].append(99)
+print(original[0]["a"])      # [1, 2, 99] — 被影响了！
+```
+
+**本课为什么用它：** `_merge_consecutive_roles()` 合并相同角色的连续消息时用 `deepcopy` 复制消息字典，确保合并操作不会修改传入的原始消息列表。
+
+### `async with`（异步上下文管理器）
+
+`async with` 是 `with` 的异步版本，用于需要异步初始化/清理的资源（如网络连接、流式传输）。
+
+```python
+async with client.stream() as stream:
+    async for event in stream:
+        process(event)
+# 退出 async with 块时，流会被自动清理
+```
+
+**本课为什么用它：** `chat_stream()` 中用 `async with self.client.messages.stream(**kwargs) as stream` 开启 Anthropic 的流式连接。`async with` 确保无论是否发生异常，流连接都会被正确关闭，不会泄漏资源。
+
+### `async for`（异步迭代）
+
+`async for` 遍历异步迭代器，每次取下一个元素时可能需要等待（如等待网络数据到达）。
+
+```python
+async with client.messages.stream(**kwargs) as stream:
+    async for event in stream:
+        if event.type == "content_block_delta":
+            print(event.delta.text, end="")
+```
+
+**本课为什么用它：** Anthropic 的流式响应逐事件到达（`content_block_start`、`content_block_delta`、`content_block_stop`），用 `async for event in stream` 逐个处理，实现打字机效果的实时输出。
+
+### `isinstance()`（类型检查）
+
+`isinstance(obj, type)` 检查对象是否是某个类型（或其子类）的实例。比直接用 `type(obj) == SomeType` 更安全，因为它支持继承。
+
+```python
+value = "hello"
+if isinstance(value, str):
+    print("是字符串")
+elif isinstance(value, list):
+    print("是列表")
+```
+
+**本课为什么用它：** 消息格式转换时需要判断 `content` 是字符串还是列表（块数组），`arguments` 是 JSON 字符串还是字典。`isinstance` 让代码能安全地处理两种输入格式。
+
+### `@staticmethod`（静态方法）
+
+不依赖实例状态（`self`）的方法，用 `@staticmethod` 声明，可以通过类名直接调用。
+
+```python
+class Converter:
+    @staticmethod
+    def celsius_to_fahrenheit(c: float) -> float:
+        return c * 9 / 5 + 32
+
+Converter.celsius_to_fahrenheit(100)  # 212.0
+```
+
+**本课为什么用它：** `_convert_messages()`、`_convert_tools()`、`_map_response()`、`_merge_consecutive_roles()` 都是纯转换函数，不需要访问 `self`，用 `@staticmethod` 明确这一点，也便于在测试中直接调用。
+
+### 返回 `tuple`（元组解包）
+
+函数可以返回一个元组，调用方用多个变量同时接收。
+
+```python
+def split_name(full: str) -> tuple[str, str]:
+    parts = full.split(" ", 1)
+    return parts[0], parts[1]
+
+first, last = split_name("John Doe")
+```
+
+**本课为什么用它：** `_convert_messages()` 返回 `tuple[str, list[dict]]`，同时返回提取出的系统提示词文本和转换后的消息列表。调用方用 `system_text, anthropic_msgs = self._convert_messages(messages)` 一行解包。
+
+### `dict.get()`（安全字典访问）
+
+`dict.get(key, default)` 在键不存在时返回默认值而不是抛出 `KeyError`。
+
+```python
+msg = {"role": "user", "content": "Hello"}
+role = msg.get("role", "user")       # "user"
+tool_calls = msg.get("tool_calls")   # None（键不存在）
+```
+
+**本课为什么用它：** 消息字典的结构不固定（有的消息有 `tool_calls`，有的没有），用 `.get()` 安全地尝试获取可选字段，避免 `KeyError` 异常。
+
+### `str.join()`（字符串拼接）
+
+`"分隔符".join(列表)` 将字符串列表拼接为一个字符串。比在循环中用 `+=` 高效得多。
+
+```python
+parts = ["Hello", "World", "!"]
+result = " ".join(parts)   # "Hello World !"
+result = "".join(parts)    # "HelloWorld!"
+result = "\n\n".join(parts) # 用两个换行连接
+```
+
+**本课为什么用它：** `_convert_messages()` 用 `"\n\n".join(system_parts)` 将多个系统消息合并为一个文本；`chat_stream()` 用 `"".join(content_parts)` 将流式接收的文本片段拼接为完整响应。
+
+### `getattr()`（动态属性访问）
+
+`getattr(obj, name, default)` 通过字符串名称获取属性，属性不存在时返回默认值。
+
+```python
+class Event:
+    type = "content_block_delta"
+
+event = Event()
+event_type = getattr(event, "type", None)  # "content_block_delta"
+missing = getattr(event, "data", None)     # None
+```
+
+**本课为什么用它：** Anthropic 流式事件的结构是动态的，不同事件类型有不同的属性。用 `getattr(event, "type", None)` 安全地获取事件类型，用 `getattr(delta, "type", None)` 检查 delta 的类型，不会因为属性不存在而崩溃。
+
+### 适配器模式（设计模式）
+
+适配器模式将一个接口转换为另一个接口，让原本不兼容的类可以协同工作。就像电源适配器把美标插头转换成国标插座一样。
+
+```python
+# 客户端期望的统一接口
+class LLMProvider(ABC):
+    async def chat(self, messages) -> LLMResponse: ...
+
+# 适配器：把 Anthropic API 转换为统一接口
+class AnthropicProvider(LLMProvider):
+    async def chat(self, messages) -> LLMResponse:
+        system, msgs = self._convert_messages(messages)  # 转换格式
+        response = await self.client.messages.create(...)  # 调用 Anthropic
+        return self._map_response(response)               # 转换回统一格式
+```
+
+**本课为什么用它：** `AnthropicProvider` 就是一个适配器，它把 Agent 使用的 OpenAI 风格消息格式转换为 Anthropic API 需要的格式，再把 Anthropic 的响应转换回统一的 `LLMResponse`。Agent 完全不知道底层用的是哪个 LLM。
+
+### OOP 继承与 `super().__init__()`
+
+子类通过 `super()` 调用父类的构造函数，确保父类的初始化逻辑被正确执行。
+
+```python
+class Base:
+    def __init__(self, name: str):
+        self.name = name
+
+class Child(Base):
+    def __init__(self, name: str, extra: int):
+        super().__init__(name)  # 先初始化父类的 name
+        self.extra = extra      # 再初始化子类特有的属性
+```
+
+**本课为什么用它：** `AnthropicProvider` 继承 `LLMProvider`，在 `__init__` 中用 `super().__init__()` 设置 `api_key`、`api_base`、`generation` 等父类属性，然后添加 `_default_model` 和 `_client` 等 Anthropic 特有的属性。
+
+### `json` 模块 — `json.loads()` 和 `json.dumps()`
+
+`json.loads()` 将 JSON 字符串解析为 Python 对象，`json.dumps()` 将 Python 对象序列化为 JSON 字符串。
+
+```python
+import json
+
+# 解析
+data = json.loads('{"name": "Alice", "age": 30}')
+print(data["name"])  # "Alice"
+
+# 序列化
+text = json.dumps(data)
+print(text)  # '{"name": "Alice", "age": 30}'
+```
+
+**本课为什么用它：** OpenAI 的工具调用参数是 JSON 字符串（如 `'{"path": "."}'`），而 Anthropic 需要字典。转换时用 `json.loads()` 解析字符串为字典；反向转换时用 `json.dumps()` 序列化。`try/except json.JSONDecodeError` 处理可能的格式错误。
+
+### `@property` 与延迟初始化
+
+`@property` 让方法像属性一样访问（不加括号）。结合 `if self._x is None` 模式实现延迟初始化，只在第一次使用时创建资源。
+
+```python
+class Service:
+    def __init__(self):
+        self._client = None
+
+    @property
+    def client(self):
+        if self._client is None:
+            import heavy_library
+            self._client = heavy_library.Client()
+        return self._client
+```
+
+**本课为什么用它：** `AnthropicProvider.client` 属性在第一次访问时才创建 `AsyncAnthropic` 客户端，避免在构造时就建立网络连接。同时将 `import anthropic` 放在方法内部，用户没装 anthropic 包也不会在导入时报错。
+
+### `pytest` 测试
+
+`pytest` 是 Python 最常用的测试框架，用简单的 `assert` 语句验证结果。测试函数以 `test_` 开头即可被自动发现。
+
+```python
+def test_addition():
+    assert 1 + 1 == 2
+
+def test_string():
+    assert "hello".upper() == "HELLO"
+```
+
+**本课为什么用它：** 测试用例直接调用 `AnthropicProvider` 的静态方法（如 `_convert_messages`、`_convert_tools`、`_map_stop_reason`），验证消息转换、工具格式转换、停止原因映射等逻辑是否正确，不需要真实的 API 调用。

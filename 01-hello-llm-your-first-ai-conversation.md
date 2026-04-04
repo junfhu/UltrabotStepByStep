@@ -361,3 +361,212 @@ Goodbye!
 一切功能的基础。
 
 ---
+
+## 本课使用的 Python 知识
+
+### `import` 语句（标准库与第三方库导入）
+
+`import` 是 Python 中引入外部功能的方式。Python 有两种主要的导入写法：
+
+```python
+import os                      # 导入整个标准库模块
+from openai import OpenAI      # 从第三方库中只导入需要的类
+```
+
+- `import os` 导入 Python 自带的 `os` 模块，提供操作系统相关功能（如读取环境变量）。
+- `from openai import OpenAI` 从第三方包 `openai`（通过 `pip install openai` 安装的）中导入 `OpenAI` 这个类。
+
+**为什么在本课使用：** 我们需要 `os` 模块来读取环境变量配置 API 密钥和地址，需要 `openai` 库的 `OpenAI` 类来与 LLM 通信。这两行是几乎所有 Python AI 项目的起手式。
+
+---
+
+### `os.getenv()` 读取环境变量
+
+`os.getenv("变量名")` 用于从操作系统的环境变量中读取值。如果该变量不存在，返回 `None`（也可以指定默认值）。
+
+```python
+api_key = os.getenv("OPENAI_API_KEY")           # 不存在时返回 None
+model = os.getenv("MODEL", "gpt-4o-mini")        # 不存在时返回 "gpt-4o-mini"
+```
+
+**为什么在本课使用：** API 密钥、服务地址、模型名称都属于敏感信息或可变配置，不应硬编码在源代码中。通过环境变量传入，同一份代码可以切换不同的 LLM 提供者，也避免了将密钥泄露到代码仓库。
+
+---
+
+### 字典 `dict`
+
+字典是 Python 中最常用的数据结构之一，用**键值对**存储数据，用花括号 `{}` 创建：
+
+```python
+message = {"role": "user", "content": "Hello!"}
+print(message["role"])      # 输出: user
+print(message["content"])   # 输出: Hello!
+```
+
+字典中的键（如 `"role"`）必须是不可变类型（通常是字符串），值可以是任何类型。
+
+**为什么在本课使用：** OpenAI 的聊天 API 要求每条消息是一个包含 `"role"` 和 `"content"` 键的字典。这是 API 协议规定的格式，本课的所有消息都以这种字典形式传递。
+
+---
+
+### 列表 `list` 与 `list.append()`
+
+列表是 Python 中的有序集合，用方括号 `[]` 创建。`append()` 方法在末尾添加元素：
+
+```python
+messages = [{"role": "system", "content": "You are a helper."}]
+messages.append({"role": "user", "content": "Hi"})
+messages.append({"role": "assistant", "content": "Hello!"})
+print(len(messages))  # 输出: 3
+```
+
+**为什么在本课使用：** 多轮对话的核心就是维护一个不断增长的消息列表。每次用户说话，`append` 一条 `user` 消息；每次 LLM 回复，`append` 一条 `assistant` 消息。LLM 每次看到完整的列表，就能"记住"之前的对话。
+
+---
+
+### 类型注解 `list[dict]`
+
+类型注解是写在变量或函数参数旁边的"提示"，告诉开发者（和 IDE）这个变量应该存什么类型的数据：
+
+```python
+messages: list[dict] = [{"role": "system", "content": "You are a helper."}]
+```
+
+这行表示 `messages` 是一个"字典组成的列表"。Python 运行时**不强制**检查类型注解，但它能帮助 IDE 提供自动补全和错误提示。
+
+**为什么在本课使用：** 标注 `messages: list[dict]` 让代码的意图更清晰——任何人读到这行都能立刻明白这是一个"消息字典的列表"，而不需要去猜测。
+
+---
+
+### `while True` 无限循环与 `break` / `continue`
+
+`while True` 创建一个永远执行的循环，直到内部用 `break` 跳出：
+
+```python
+while True:
+    user_input = input("you > ").strip()
+    if not user_input:
+        continue       # 跳过本次循环，回到 while True
+    if user_input.lower() in ("exit", "quit"):
+        break          # 跳出整个循环，程序继续往下执行
+    # ... 处理输入 ...
+```
+
+- `continue`：跳过本次循环的剩余代码，直接开始下一次循环
+- `break`：完全跳出循环
+
+**为什么在本课使用：** 聊天机器人需要不断接受用户输入并回复，直到用户输入 `exit`。`while True` + `break` 是实现"一直运行直到某个条件满足"这种模式的标准写法。
+
+---
+
+### `input()` 与字符串方法 `strip()` / `lower()`
+
+`input()` 从终端读取用户输入，返回字符串。常配合字符串方法清理输入：
+
+```python
+text = input("you > ")      # 等待用户输入
+text = text.strip()          # 去掉首尾空白字符（空格、换行等）
+text = text.lower()          # 转为全小写
+```
+
+**为什么在本课使用：** `strip()` 确保用户不小心多按的空格不会影响判断；`lower()` 让 `"Exit"`、`"EXIT"`、`"exit"` 都能被识别为退出命令，提升用户体验。
+
+---
+
+### `in` 成员检测运算符
+
+`in` 用于检查某个值是否存在于一个集合（列表、元组、字符串、字典等）中：
+
+```python
+if user_input.lower() in ("exit", "quit"):
+    break
+```
+
+这行等价于 `if user_input.lower() == "exit" or user_input.lower() == "quit"`，但更简洁。
+
+**为什么在本课使用：** 用一行代码同时检测多个退出命令（`exit` 和 `quit`），比写多个 `if` / `elif` 更简洁优雅。
+
+---
+
+### f-string 格式化字符串
+
+f-string（格式化字符串）是 Python 3.6+ 引入的字符串格式化方式，在字符串前加 `f`，花括号 `{}` 中可以直接嵌入 Python 表达式：
+
+```python
+model = "gpt-4o-mini"
+print(f"UltraBot ready (model={model})")
+# 输出: UltraBot ready (model=gpt-4o-mini)
+
+name = "Alice"
+print(f"Hello, {name.upper()}!")
+# 输出: Hello, ALICE!
+```
+
+**为什么在本课使用：** 在打印提示信息时，需要将变量值（如模型名称、助手回复）嵌入到字符串中。f-string 是最直观、最高效的方式。
+
+---
+
+### `pytest` 测试框架
+
+`pytest` 是 Python 最流行的测试框架。测试函数以 `test_` 开头，用 `assert` 语句验证结果：
+
+```python
+def test_message_format():
+    messages = [{"role": "user", "content": "Hello!"}]
+    assert "role" in messages[0]         # 断言为真则通过
+    assert messages[0]["role"] == "user"  # 断言不为真则测试失败
+```
+
+运行方式：`pytest tests/test_session1.py -v`
+
+**为什么在本课使用：** 测试确保我们的消息格式正确、环境变量配置可用、响应解析无误。即使是最简单的代码，测试也能防止回归错误——后续修改时如果不小心破坏了什么，测试会立刻报警。
+
+---
+
+### `monkeypatch`（pytest 夹具）
+
+`monkeypatch` 是 pytest 提供的一个特殊工具（夹具/fixture），用于在测试中临时修改环境变量、属性等，测试结束后自动恢复：
+
+```python
+def test_custom_model(monkeypatch):
+    monkeypatch.setenv("MODEL", "deepseek-chat")   # 临时设置环境变量
+    model = os.getenv("MODEL", "gpt-4o-mini")
+    assert model == "deepseek-chat"
+# 测试结束后 MODEL 环境变量自动恢复原值
+```
+
+**为什么在本课使用：** 测试环境变量配置时，我们不想真的修改系统环境变量（会影响其他测试）。`monkeypatch` 让我们可以安全地模拟各种配置场景。
+
+---
+
+### `unittest.mock.MagicMock`
+
+`MagicMock` 是 Python 标准库中的"万能替身"对象。它可以模拟任何对象，访问它的任何属性或方法都不会报错：
+
+```python
+from unittest.mock import MagicMock
+
+mock_response = MagicMock()
+mock_response.choices[0].message.content = "Hello!"
+print(mock_response.choices[0].message.content)  # 输出: Hello!
+```
+
+**为什么在本课使用：** 在测试中我们不想真正调用 LLM API（需要网络、需要付费），所以用 `MagicMock` 构造一个假的响应对象，验证我们的解析逻辑是否正确。这是单元测试的核心技巧。
+
+---
+
+### `try` / `finally` 异常处理
+
+`try/finally` 确保无论是否发生异常，`finally` 中的代码都会执行：
+
+```python
+orig = os.environ.pop("MODEL", None)   # 临时移除环境变量
+try:
+    model = os.getenv("MODEL", "gpt-4o-mini")
+    assert model == "gpt-4o-mini"
+finally:
+    if orig is not None:
+        os.environ["MODEL"] = orig      # 无论如何都恢复原值
+```
+
+**为什么在本课使用：** 在手动操作环境变量的测试中，`finally` 块保证即使测试失败（抛出异常），环境变量也会被恢复到原始状态，不会污染其他测试用例。

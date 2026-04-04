@@ -401,3 +401,227 @@ python -m pytest tests/test_context_compressor.py -v
 一个基于 LLM 的上下文压缩器，使用结构化摘要模板（目标/进展/决策/文件/后续步骤）将长对话压缩为原始 token 开销的一小部分。它先裁剪工具输出（零成本），然后调用廉价模型进行实际摘要。摘要在多次压缩中累积堆叠，因此智能体永远不会丢失关键上下文。
 
 ---
+
+## 本课使用的 Python 知识
+
+### `logging` 标准库日志模块
+
+`logging` 是 Python 内置的日志框架，通过 `logging.getLogger(__name__)` 为当前模块创建独立的日志记录器，方便按模块过滤日志。
+
+```python
+import logging
+
+logger = logging.getLogger(__name__)
+logger.info("压缩完成，移除了 %d 条消息", count)
+logger.warning("摘要生成失败，使用兜底消息")
+```
+
+**为什么在本课中使用：** 本课使用标准库 `logging` 而非 `loguru`，展示了另一种日志方案。`getLogger(__name__)` 让日志自动带上模块名，方便在大型项目中定位问题来源。
+
+### `typing.Optional` 可选类型
+
+`Optional[X]` 等价于 `X | None`，表示一个值可以是类型 `X` 或者 `None`。在较早版本的 Python 中常用。
+
+```python
+from typing import Optional
+
+class ContextCompressor:
+    def __init__(self) -> None:
+        self._previous_summary: Optional[str] = None  # 字符串或 None
+```
+
+**为什么在本课中使用：** `_previous_summary` 初始为 `None`（尚未压缩过），压缩后存储摘要字符串。`Optional[str]` 清楚地表达了这种"有或无"的语义。
+
+### `class` 与 `__init__` 面向对象编程
+
+Python 的类通过 `class` 关键字定义，`__init__` 是构造方法，在创建实例时自动调用。`self` 指向当前实例。
+
+```python
+class ContextCompressor:
+    def __init__(self, auxiliary, threshold_ratio: float = 0.80) -> None:
+        self.auxiliary = auxiliary
+        self.threshold_ratio = threshold_ratio
+        self.compression_count: int = 0
+```
+
+**为什么在本课中使用：** `ContextCompressor` 类封装了压缩逻辑的所有状态（辅助客户端、阈值、保护头尾的消息数、摘要历史），通过方法（`should_compress`、`compress`）提供操作接口。
+
+### `@staticmethod` 静态方法
+
+`@staticmethod` 定义不需要访问实例（`self`）或类（`cls`）的方法，是逻辑上属于类但不依赖实例状态的纯函数。
+
+```python
+class ContextCompressor:
+    @staticmethod
+    def estimate_tokens(messages: list[dict]) -> int:
+        total_chars = sum(len(m.get("content", "")) for m in messages)
+        return total_chars // 4
+```
+
+**为什么在本课中使用：** `estimate_tokens()` 和 `prune_tool_output()` 是通用工具函数——它们只依赖输入参数，不需要访问压缩器的实例状态，定义为静态方法更清晰合理。
+
+### `async / await` 异步编程
+
+`async def` 定义协程函数，`await` 用于等待异步操作（如 LLM API 调用）完成。在等待期间，事件循环可以执行其他任务。
+
+```python
+async def compress(self, messages: list[dict]) -> list[dict]:
+    summary_text = await self.auxiliary.complete(
+        summary_messages,
+        max_tokens=self.max_summary_tokens,
+        temperature=0.3,
+    )
+    return head + [summary_message] + tail
+```
+
+**为什么在本课中使用：** 摘要生成需要调用 LLM API，这是一个耗时的 I/O 操作。`async/await` 让程序在等待 API 响应时不被阻塞，可以同时处理其他请求。
+
+### `isinstance()` 类型检查
+
+`isinstance(obj, type)` 检查对象是否是指定类型的实例，比直接用 `type()` 更灵活（支持继承关系）。
+
+```python
+for tc in msg.get("tool_calls", []):
+    if isinstance(tc, dict):
+        fn = tc.get("function", {})
+        name = fn.get("name", "?")
+```
+
+**为什么在本课中使用：** `tool_calls` 字段的元素理论上应该是字典，但实际数据可能不规范。用 `isinstance(tc, dict)` 做防御性检查，只处理合法的工具调用数据。
+
+### `dict.get()` 字典安全取值
+
+`dict.get(key, default)` 在键不存在时返回默认值，而不是抛出 `KeyError`。
+
+```python
+content = msg.get("content") or ""  # 键不存在或值为 None 时用空字符串
+role = msg.get("role", "unknown")   # 键不存在时用 "unknown"
+```
+
+**为什么在本课中使用：** 消息字典的结构不固定——有些消息可能没有 `content` 字段（如纯工具调用），有些可能没有 `tool_calls`。`.get()` 让代码对缺失字段免疫。
+
+### `dict.copy()` 字典浅拷贝
+
+`dict.copy()` 创建字典的浅拷贝——新字典与原字典有相同的键值对，但修改新字典不影响原字典。
+
+```python
+truncated = msg.copy()  # 不修改原始消息
+truncated["content"] = original[:max_chars] + "...[truncated]"
+result.append(truncated)
+```
+
+**为什么在本课中使用：** `prune_tool_output()` 截断过长的工具输出时，必须先复制消息字典再修改，否则会意外修改原始消息列表中的数据。
+
+### `list()` 列表复制和列表切片
+
+`list(original)` 创建列表的浅拷贝。列表切片 `lst[a:b]` 返回一个新的子列表。负数索引 `lst[-n:]` 取最后 n 个元素。
+
+```python
+messages = [msg1, msg2, msg3, ..., msg20]
+
+head = messages[:3]       # 前 3 条（系统提示 + 首轮对话）
+tail = messages[-6:]      # 最后 6 条（最近的消息）
+middle = messages[3:-6]   # 中间部分（待压缩）
+```
+
+**为什么在本课中使用：** 压缩算法的核心是"头尾保护"——用切片把消息分为三段：头部（保护）、中间（压缩为摘要）、尾部（保护）。
+
+### `f-string` 和多行字符串常量
+
+f-string 用于字符串格式化，三引号多行字符串用于定义长文本模板。
+
+```python
+SUMMARY_PREFIX = (
+    "[CONTEXT COMPACTION] Earlier turns in this conversation were compacted "
+    "to save context space."
+)
+
+_SUMMARY_TEMPLATE = """\
+## Conversation Summary
+**Goal:** [what the user is trying to accomplish]
+**Progress:** [what has been done so far]
+**Key Decisions:** [important choices made]"""
+```
+
+**为什么在本课中使用：** 摘要提示模板和前缀是长字符串常量，用多行字符串和字符串拼接（相邻字符串自动拼接）保持代码整洁可读。
+
+### `max()` 内置函数
+
+`max(a, b)` 返回两个值中的较大者，常用于设置下限——确保某个值不低于最小要求。
+
+```python
+self.protect_head = max(1, protect_head)  # 至少保护 1 条消息
+self.protect_tail = max(1, protect_tail)  # 至少保护 1 条消息
+```
+
+**为什么在本课中使用：** 即使调用者传入 `protect_head=0`，也至少保护 1 条消息（通常是系统提示），`max(1, n)` 强制了这个下限。
+
+### `int()` 类型转换
+
+`int()` 将浮点数或字符串转换为整数。对浮点数执行截断（去掉小数部分），不是四舍五入。
+
+```python
+threshold = int(context_limit * self.threshold_ratio)
+# 例如 int(128000 * 0.80) = 102400
+```
+
+**为什么在本课中使用：** token 阈值计算结果是浮点数（如 `128000 × 0.80 = 102400.0`），需要转为整数与估算的 token 数进行比较。
+
+### `pytest.mark.asyncio` 异步测试
+
+`@pytest.mark.asyncio` 标记一个测试函数为异步测试——pytest 会自动创建事件循环来运行它。需要安装 `pytest-asyncio` 插件。
+
+```python
+import pytest
+
+@pytest.mark.asyncio
+async def test_compress():
+    result = await compressor.compress(messages)
+    assert len(result) < len(messages)
+```
+
+**为什么在本课中使用：** `compress()` 是异步方法（需要 `await` 调用 LLM API），测试也必须是异步的才能正确测试。
+
+### `unittest.mock.AsyncMock` 和 `MagicMock`
+
+`AsyncMock` 模拟异步函数/方法，`MagicMock` 模拟普通对象。两者都可以配置返回值，用于隔离测试。
+
+```python
+from unittest.mock import AsyncMock, MagicMock
+
+aux = AsyncMock()
+aux.complete = AsyncMock(return_value="## Summary\n**Goal:** test")
+
+comp = ContextCompressor(auxiliary=aux)
+result = await comp.compress(messages)
+
+aux.complete.assert_called_once()  # 验证 LLM 被调用了一次
+```
+
+**为什么在本课中使用：** 测试压缩器时不可能真正调用 LLM API（成本高、不可控）。用 `AsyncMock` 模拟辅助客户端的 `complete()` 方法，返回预设的摘要文本。
+
+### `any()` 内置函数
+
+`any(iterable)` 只要可迭代对象中有一个元素为真就返回 `True`。常与生成器表达式配合使用。
+
+```python
+# 检查结果中是否有任何消息包含摘要前缀
+has_summary = any(SUMMARY_PREFIX in m.get("content", "") for m in result)
+assert has_summary
+```
+
+**为什么在本课中使用：** 测试中需要验证压缩后的消息列表中是否包含摘要消息。`any()` 配合生成器表达式简洁地完成了这个检查。
+
+### 列表拼接 `+`
+
+Python 中两个列表可以用 `+` 运算符拼接成一个新列表。
+
+```python
+head = [msg1, msg2]
+summary = [summary_msg]
+tail = [msg18, msg19, msg20]
+
+result = head + summary + tail  # 拼接为新列表
+```
+
+**为什么在本课中使用：** 压缩完成后，需要将头部消息、摘要消息和尾部消息拼接为最终的压缩结果。`head + [summary_message] + tail` 简洁地完成了组装。

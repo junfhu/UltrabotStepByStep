@@ -386,3 +386,293 @@ Goodbye!
 一个带有 `run()` 方法的 `Agent` 类，实现了核心智能体循环：追加用户消息 -> 流式调用 LLM -> 追加助手回复 -> 循环。最大迭代次数保护防止了无限循环。这是 `ultrabot/agent/agent.py` 的骨架 -- 下一节我们将添加工具调用。
 
 ---
+
+## 本课使用的 Python 知识
+
+### `from __future__ import annotations`（延迟注解求值）
+
+这行写在文件最顶部，让 Python 不会在定义时立即解析类型注解，而是将它们当作字符串存储：
+
+```python
+from __future__ import annotations
+
+class Agent:
+    def run(self) -> str:   # "str" 不会在定义时被求值
+        ...
+```
+
+**为什么在本课使用：** 它允许我们在类型注解中使用尚未定义的类名（前向引用），也让 `str | None` 这种新语法在 Python 3.9 等较老版本中也能工作。这是现代 Python 项目的常见做法。
+
+---
+
+### `@dataclass` 数据类
+
+`dataclass` 是 Python 3.7+ 引入的装饰器，自动为类生成 `__init__`、`__repr__` 等方法，让你用最少的代码定义数据容器：
+
+```python
+from dataclasses import dataclass, field
+
+@dataclass
+class LLMResponse:
+    content: str | None = None
+    tool_calls: list[dict] = field(default_factory=list)
+    usage: dict[str, Any] = field(default_factory=dict)
+```
+
+等价于手写一个包含 `__init__`、`__repr__` 等方法的类，但代码量少了一半以上。
+
+**为什么在本课使用：** `LLMResponse` 只需要存储几个字段，没有复杂逻辑。用 `@dataclass` 可以用三行声明代替十几行模板代码，让代码更清晰。
+
+---
+
+### `field(default_factory=...)` 数据类默认工厂
+
+在 `@dataclass` 中，如果默认值是可变对象（如列表、字典），必须使用 `field(default_factory=...)` 而不是直接赋值：
+
+```python
+# 错误！所有实例会共享同一个列表
+# tool_calls: list[dict] = []
+
+# 正确！每个实例创建独立的新列表
+tool_calls: list[dict] = field(default_factory=list)
+```
+
+**为什么在本课使用：** `LLMResponse` 的 `tool_calls` 和 `usage` 字段默认为空列表和空字典。如果不用 `default_factory`，所有 `LLMResponse` 实例会共享同一个列表/字典，修改一个会影响所有——这是 Python 中非常常见的陷阱。
+
+---
+
+### `typing` 模块：`Any` 和 `Callable`
+
+`typing` 模块提供高级类型注解工具：
+
+```python
+from typing import Any, Callable
+
+# Any 表示"任意类型"
+usage: dict[str, Any] = {}    # 值可以是字符串、数字、列表……任何东西
+
+# Callable[[参数类型], 返回类型] 表示一个可调用对象（函数）
+on_content_delta: Callable[[str], None]   # 接收一个字符串，返回 None 的函数
+```
+
+**为什么在本课使用：** `Any` 用于 `usage` 字典（其值类型不固定）；`Callable` 用于流式输出回调函数参数——告诉读者"这个参数需要传入一个接收字符串的函数"。
+
+---
+
+### `str | None` 联合类型（PEP 604）
+
+`str | None` 表示一个值可以是字符串，也可以是 `None`：
+
+```python
+content: str | None = None     # content 可能是字符串，也可能是 None
+```
+
+这是 Python 3.10+ 引入的语法，等价于旧写法 `Optional[str]` 或 `Union[str, None]`。
+
+**为什么在本课使用：** LLM 的响应内容可能为空（比如只返回工具调用没有文本），所以 `content` 需要允许 `None` 值。`str | None` 明确表达了这种可能性。
+
+---
+
+### `@property` 属性装饰器
+
+`@property` 把一个方法变成"看起来像属性"的东西——访问时不需要加括号：
+
+```python
+@dataclass
+class LLMResponse:
+    tool_calls: list[dict] = field(default_factory=list)
+
+    @property
+    def has_tool_calls(self) -> bool:
+        return bool(self.tool_calls)
+
+response = LLMResponse(tool_calls=[{"id": "1"}])
+print(response.has_tool_calls)  # True（注意没有括号）
+```
+
+**为什么在本课使用：** `has_tool_calls` 本质是一个计算属性（根据 `tool_calls` 是否为空推导出来的），用 `@property` 让调用代码写成 `response.has_tool_calls` 而不是 `response.has_tool_calls()`，更自然、更像访问一个状态。
+
+---
+
+### 类（`class`）与面向对象编程
+
+类是 Python 面向对象编程的基础，将数据（属性）和操作数据的方法（函数）封装在一起：
+
+```python
+class Agent:
+    def __init__(self, client, model):
+        self._client = client     # 实例属性
+        self._model = model
+
+    def run(self, user_message):  # 实例方法
+        ...
+
+    def clear(self):
+        ...
+```
+
+**为什么在本课使用：** 智能体需要维护对话状态（`_messages` 列表）、持有 LLM 客户端引用、提供多个操作方法。将这些封装进 `Agent` 类中，比在全局变量中管理状态更清晰、更安全、更易复用。
+
+---
+
+### `__init__` 构造函数与 `self`
+
+`__init__` 是创建类实例时自动调用的特殊方法。`self` 是实例自身的引用：
+
+```python
+class Agent:
+    def __init__(self, client: OpenAI, model: str) -> None:
+        self._client = client     # 将参数保存为实例属性
+        self._model = model
+        self._messages = []       # 初始化内部状态
+
+agent = Agent(client=my_client, model="gpt-4o")  # 自动调用 __init__
+```
+
+**为什么在本课使用：** Agent 的 `__init__` 接收并保存客户端、模型名、系统提示词等配置，并初始化消息列表。这些都是实例级别的状态，每个 Agent 对象独立维护。
+
+---
+
+### `_` 前缀命名惯例（私有属性）
+
+Python 中以单下划线 `_` 开头的属性或方法表示"仅供内部使用"：
+
+```python
+class Agent:
+    def __init__(self):
+        self._messages = []      # 私有属性，外部不应直接访问
+        self._client = ...
+
+    def _chat_stream(self):      # 私有方法，外部不应直接调用
+        ...
+
+    def run(self):               # 公共方法，供外部调用
+        ...
+```
+
+这只是命名惯例，Python 不会真的阻止外部访问，但它传达了"这是内部实现细节"的意图。
+
+**为什么在本课使用：** `_messages`、`_client`、`_chat_stream` 等是 Agent 的内部实现细节，外部代码应该通过 `run()` 和 `clear()` 等公共方法来交互。下划线前缀让代码的公共接口和内部实现一目了然。
+
+---
+
+### `for ... else` 循环
+
+Python 独有的语法：`for` 循环正常结束（没被 `break` 打断）时，执行 `else` 块：
+
+```python
+for iteration in range(1, max_iterations + 1):
+    response = self._chat_stream(on_content_delta)
+    if not response.has_tool_calls:
+        break                    # 有最终答案，跳出循环
+else:
+    # 只有循环跑完所有迭代都没 break 时才执行这里
+    final_content = "达到最大迭代次数"
+```
+
+**为什么在本课使用：** 智能体循环需要一个"安全阀"——如果 LLM 一直请求工具调用，循环耗尽所有迭代后，`else` 块返回一个安全提示，避免无限循环。
+
+---
+
+### `range()` 范围函数
+
+`range()` 生成一个整数序列，常用于 `for` 循环：
+
+```python
+for i in range(1, 11):    # 生成 1, 2, 3, ..., 10
+    print(i)
+
+for i in range(5):         # 生成 0, 1, 2, 3, 4
+    print(i)
+```
+
+**为什么在本课使用：** `range(1, self._max_iterations + 1)` 控制智能体循环最多执行指定次数，防止在工具调用出问题时无限循环。
+
+---
+
+### `"".join()` 字符串拼接
+
+`"".join(列表)` 将字符串列表高效地拼接成一个字符串：
+
+```python
+parts = ["Hello", " ", "world", "!"]
+result = "".join(parts)     # "Hello world!"
+```
+
+**为什么在本课使用：** 流式输出时，我们把每个小片段（token）收集到 `content_parts` 列表中，最后用 `"".join(content_parts)` 一次性拼接成完整响应。这比用 `+=` 反复拼接字符串效率高得多。
+
+---
+
+### `lambda` 匿名函数
+
+`lambda` 创建一个简短的、没有名字的函数，适合只使用一次的简单逻辑：
+
+```python
+# 完整写法
+def print_chunk(chunk):
+    print(chunk, end="", flush=True)
+
+# lambda 等价写法
+print_chunk = lambda chunk: print(chunk, end="", flush=True)
+
+# 常见用法：直接作为参数传递
+agent.run("Hi", on_content_delta=lambda chunk: print(chunk, end="", flush=True))
+```
+
+**为什么在本课使用：** 流式输出回调只需要一行代码（打印 token），为它单独定义一个函数太冗余。`lambda` 让我们在调用处直接定义这个简单逻辑。
+
+---
+
+### `print()` 的 `end` 和 `flush` 参数
+
+`print()` 默认在末尾加换行符。通过 `end=""` 可以取消换行，`flush=True` 强制立即输出：
+
+```python
+print("Hello ", end="")       # 不换行
+print("world!", end="")      # 不换行
+print()                        # 输出: Hello world!（最后换行）
+
+# flush=True 强制立即写入终端（不等缓冲区满）
+print("loading...", end="", flush=True)
+```
+
+**为什么在本课使用：** 流式输出需要每个 token 到达时立刻显示在同一行上，模拟"打字效果"。`end=""` 避免每个 token 换行，`flush=True` 确保 token 立即可见而不是积攒在缓冲区中。
+
+---
+
+### 回调函数模式（`on_content_delta`）
+
+回调函数是一种设计模式：你把一个函数作为参数传给另一个函数，后者在特定事件发生时"回调"它：
+
+```python
+def run(self, user_message, on_content_delta=None):
+    ...
+    if on_content_delta:
+        on_content_delta(delta.content)   # 每收到一个 token 就调用回调
+
+# 使用时传入你想执行的逻辑
+agent.run("Hi", on_content_delta=lambda chunk: print(chunk, end=""))
+```
+
+**为什么在本课使用：** Agent 类不应该直接 `print`——它可能在 CLI、Web、测试等不同环境中使用。回调模式让调用者决定如何处理流式数据：CLI 可以打印到终端，Web 可以推送到浏览器，测试可以收集到列表中。这是**关注点分离**的体现。
+
+---
+
+### 流式迭代器（`stream=True`）
+
+OpenAI SDK 的 `stream=True` 参数让 API 返回一个迭代器，你可以用 `for` 循环逐个处理数据块（chunk），而不是等待完整响应：
+
+```python
+stream = client.chat.completions.create(
+    model=model,
+    messages=messages,
+    stream=True,          # 关键参数
+)
+
+for chunk in stream:      # chunk 逐个到达
+    delta = chunk.choices[0].delta
+    if delta.content:
+        print(delta.content, end="")
+```
+
+**为什么在本课使用：** LLM 生成长文本可能需要几秒钟。流式输出让用户在 LLM 还在生成时就能看到前面的内容，大幅提升交互体验——这就是 ChatGPT 逐字显示的原理。

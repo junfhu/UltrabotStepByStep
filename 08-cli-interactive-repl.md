@@ -615,3 +615,270 @@ python -m ultrabot agent -m "What is the capital of France?"
 - 课程 16：定时任务 + 计划任务
 
 ---
+
+## 本课使用的 Python 知识
+
+### `from __future__ import annotations`（延迟注解求值）
+
+让类型注解在定义时不被立即求值，允许使用 `str | None` 等现代语法。
+
+```python
+from __future__ import annotations
+
+def process(data: str | None = None) -> str:
+    return data or "default"
+```
+
+**本课为什么用它：** CLI 代码中使用了 `str | None`、`Path` 等类型注解，这行保证兼容性。
+
+### `asyncio.run()` 和 `asyncio.get_event_loop().run_in_executor()`
+
+`asyncio.run()` 是运行异步代码的入口点。`run_in_executor()` 将阻塞的同步函数放到线程池中执行，不阻塞事件循环。
+
+```python
+import asyncio
+
+async def main():
+    # 在线程池中运行阻塞操作
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, input, "请输入: "
+    )
+    print(f"你输入了: {result}")
+
+asyncio.run(main())
+```
+
+**本课为什么用它：** `asyncio.run(_agent_async(...))` 启动整个异步流程。在交互循环中，`session.prompt()` 是阻塞调用（等待用户输入），用 `run_in_executor(None, lambda: session.prompt("you > "))` 将其放到线程池执行，避免阻塞事件循环，让其他异步任务（如超时检测）仍然可以运行。
+
+### `pathlib.Path`（面向对象的路径操作）
+
+`Path` 提供跨平台的路径操作，比字符串拼接更安全、更直观。支持 `/` 运算符拼接路径。
+
+```python
+from pathlib import Path
+
+home = Path.home()                    # 用户主目录
+config = home / ".ultrabot" / "config.json"  # 用 / 拼接
+config.parent.mkdir(parents=True, exist_ok=True)  # 创建父目录
+if config.exists():
+    text = config.read_text()
+```
+
+**本课为什么用它：** CLI 需要处理配置文件路径（`~/.ultrabot/config.json`）、历史文件路径（`~/.ultrabot/.history`）等。`Path` 的 `/` 运算符比 `os.path.join()` 更简洁，`.exists()`、`.mkdir(parents=True)` 等方法比 `os.path.exists()`、`os.makedirs()` 更直观。
+
+### `typing.Annotated` 和 `typing.Optional`
+
+`Annotated` 可以给类型注解附加元数据（如 Typer 的参数描述）。`Optional[X]` 等价于 `X | None`。
+
+```python
+from typing import Annotated, Optional
+
+# Annotated 附加元数据
+name: Annotated[str, "用户名称"] = "default"
+
+# Optional 表示可以是 None
+value: Optional[int] = None  # 等价于 int | None
+```
+
+**本课为什么用它：** Typer 用 `Annotated[Optional[str], typer.Option(...)]` 来声明 CLI 参数。`Annotated` 让 Typer 知道这个参数的选项名（如 `--message`）、帮助文本和其他元数据。
+
+### `typer` 库（CLI 框架）
+
+Typer 基于类型注解自动生成命令行界面，比 `argparse` 更简洁。用装饰器定义命令和回调。
+
+```python
+import typer
+
+app = typer.Typer()
+
+@app.command()
+def hello(name: str = "World"):
+    """向某人打招呼"""
+    print(f"Hello, {name}!")
+
+@app.callback()
+def main(version: bool = typer.Option(False, "--version")):
+    if version:
+        print("v1.0")
+        raise typer.Exit()
+
+app()
+```
+
+**本课为什么用它：** `@app.command()` 定义了 `agent` 和 `status` 两个子命令，`@app.callback()` 处理全局选项（如 `--version`）。Typer 从函数签名自动生成帮助信息和参数校验，省去了手写 `argparse` 的大量代码。
+
+### `raise typer.Exit()`（CLI 退出）
+
+`typer.Exit()` 是 Typer 提供的干净退出异常。抛出它不会打印错误信息，只是正常结束程序。
+
+```python
+def version_callback(value: bool) -> None:
+    if value:
+        print("v1.0.0")
+        raise typer.Exit()  # 打印版本后直接退出
+```
+
+**本课为什么用它：** `--version` 标志只需打印版本号后退出，不需要执行任何其他命令。`raise typer.Exit()` 实现了这个效果。
+
+### `rich` 库 — `Console`、`Live`、`Markdown`、`Panel`
+
+Rich 是 Python 的终端美化库。`Console` 是输出终端；`Live` 提供实时更新的显示区域；`Markdown` 渲染 markdown 文本；`Panel` 添加边框和标题。
+
+```python
+from rich.console import Console
+from rich.live import Live
+from rich.markdown import Markdown
+from rich.panel import Panel
+
+console = Console()
+console.print(Panel(Markdown("**Hello** World"), title="Demo"))
+```
+
+**本课为什么用它：** `StreamRenderer` 用 `Live` 实时更新显示（每秒刷新 8 次），`Markdown` 将 LLM 输出渲染为格式化文本（粗体、代码块等），`Panel` 加上漂亮的蓝色边框。这让终端输出从纯文本变成了美观的富文本界面。
+
+### `StreamRenderer` 类（Rich Live 的封装）
+
+这个类展示了如何封装第三方库，提供简洁的 `start()/feed()/finish()` 生命周期接口。
+
+```python
+renderer = StreamRenderer(title="UltraBot")
+renderer.start()        # 开始实时显示
+renderer.feed("Hello ") # 追加文本并刷新
+renderer.feed("World!") # 继续追加
+result = renderer.finish()  # 停止显示，返回完整文本
+```
+
+**本课为什么用它：** LLM 的流式响应是逐块到达的，`StreamRenderer` 将每个到达的文本片段追加到缓冲区并实时刷新终端显示，用户可以看到文字逐渐出现的效果，而不是等待全部完成后才看到输出。
+
+### `prompt_toolkit`（交互式输入）
+
+`prompt_toolkit` 提供类似 readline 的高级输入功能：历史记录（按上/下键翻阅之前输入的内容）、自动补全、语法高亮等。
+
+```python
+from prompt_toolkit import PromptSession
+from prompt_toolkit.history import FileHistory
+
+session = PromptSession(
+    history=FileHistory(".history")  # 持久化历史记录到文件
+)
+text = session.prompt("you > ")
+```
+
+**本课为什么用它：** 交互式 REPL 需要好的用户体验。`PromptSession` 提供可持久化的命令历史记录（保存在 `~/.ultrabot/.history`），用户下次启动时可以用上下键翻阅之前的输入。比 Python 内置的 `input()` 功能强大得多。
+
+### `while True` 循环（交互式 REPL）
+
+`while True` 创建无限循环，通过内部的 `break` 语句退出。这是 REPL（Read-Eval-Print Loop）的标准模式。
+
+```python
+while True:
+    try:
+        user_input = input(">>> ")
+    except (EOFError, KeyboardInterrupt):
+        print("Bye!")
+        break
+
+    if user_input == "/quit":
+        break
+
+    print(f"你说了: {user_input}")
+```
+
+**本课为什么用它：** 交互式聊天需要不断读取用户输入、发送给 LLM、显示响应，直到用户输入 `/quit` 或按 Ctrl+C。`while True` + `break` 是实现这种循环的最清晰方式。
+
+### `str.startswith()` 和 `str.split()`（字符串处理）
+
+`startswith()` 检查字符串是否以某前缀开头；`split()` 将字符串按分隔符拆分为列表。
+
+```python
+text = "/model gpt-4o"
+if text.startswith("/"):
+    parts = text.split(maxsplit=1)  # 最多分成 2 段
+    print(parts)  # ["/model", "gpt-4o"]
+```
+
+**本课为什么用它：** 斜杠命令以 `/` 开头，用 `startswith("/")` 快速判断。`/model gpt-4o` 用 `split(maxsplit=1)` 分成命令名和参数两部分。
+
+### `lambda` 表达式（匿名函数）
+
+`lambda` 创建简短的匿名函数，通常用在只需要一次的简单回调场景。
+
+```python
+# 普通函数
+def get_input():
+    return session.prompt("you > ")
+
+# 等价的 lambda
+get_input = lambda: session.prompt("you > ")
+```
+
+**本课为什么用它：** `run_in_executor(None, lambda: session.prompt("you > "))` 用 lambda 包装 prompt 调用，因为 `run_in_executor` 需要一个无参数的可调用对象。
+
+### 闭包（Closure）
+
+闭包是一个函数「记住」了它定义时的外部变量。内部函数可以访问外部函数的局部变量，即使外部函数已经返回。
+
+```python
+def make_callback(renderer):
+    async def callback(chunk: str) -> None:
+        renderer.feed(chunk)  # 访问外部函数的 renderer 变量
+    return callback
+```
+
+**本课为什么用它：** `_make_stream_callback(renderer)` 创建一个闭包，返回的 `callback` 函数「记住」了 `renderer` 对象。当 LLM 流式返回每个文本片段时，这个回调会被调用，将片段发送给对应的渲染器。
+
+### `try/except` 捕获 `EOFError` 和 `KeyboardInterrupt`
+
+`EOFError` 在输入流结束时触发（如管道输入结束），`KeyboardInterrupt` 在用户按 Ctrl+C 时触发。
+
+```python
+try:
+    text = input(">>> ")
+except EOFError:
+    print("输入结束")
+except KeyboardInterrupt:
+    print("用户中断")
+```
+
+**本课为什么用它：** 交互式 REPL 中用户可能按 Ctrl+C 中断或 Ctrl+D 结束输入，需要优雅地处理这些情况而不是崩溃。
+
+### `__main__.py`（包的入口点）
+
+当一个包目录中有 `__main__.py` 文件时，可以用 `python -m 包名` 来运行它。
+
+```python
+# ultrabot/__main__.py
+from ultrabot.cli.commands import app
+app()
+```
+
+```bash
+python -m ultrabot agent  # 运行 ultrabot 包的 __main__.py
+```
+
+**本课为什么用它：** 用户可以通过 `python -m ultrabot agent` 直接启动交互式聊天，而不需要知道具体的脚本路径。这是 Python 包的标准分发方式。
+
+### `f-string` 格式化字符串
+
+`f"..."` 允许在字符串中直接嵌入 Python 表达式，用大括号 `{}` 包裹。
+
+```python
+name = "gpt-4o"
+print(f"Switched to model: {name}")       # Switched to model: gpt-4o
+print(f"[red]Error: {exc}[/red]")         # Rich 标记 + 变量
+```
+
+**本课为什么用它：** CLI 输出大量使用 f-string 生成动态消息，如显示当前模型名、错误信息、配置路径等。比 `format()` 或 `%` 格式化更直观。
+
+### `pytest` 与 `capsys` fixture
+
+`pytest` 的 `capsys` fixture 可以捕获测试中打印到标准输出/错误的内容。
+
+```python
+def test_banner(capsys):
+    print("Hello!")
+    captured = capsys.readouterr()
+    assert "Hello!" in captured.out
+```
+
+**本课为什么用它：** `test_interactive_banner(capsys)` 测试横幅打印函数是否能正常执行而不报错，`capsys` 可以捕获 Rich 输出的内容进行验证。

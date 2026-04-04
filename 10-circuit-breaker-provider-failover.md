@@ -970,3 +970,334 @@ CLOSED → OPEN → HALF_OPEN → CLOSED 之间转换，防止级联故障。
 通过可控 mock 展示三个场景：正常运行、宕机故障转移、恢复探测。
 
 ---
+
+## 本课使用的 Python 知识
+
+### `enum.Enum`（枚举类）
+
+`Enum` 定义一组命名的常量值，比用字符串或整数表示状态更安全、更清晰。
+
+```python
+from enum import Enum
+
+class CircuitState(Enum):
+    CLOSED = "closed"       # 健康
+    OPEN = "open"           # 已熔断
+    HALF_OPEN = "half_open" # 探测中
+
+# 使用
+state = CircuitState.CLOSED
+print(state.value)        # "closed"
+print(state == CircuitState.CLOSED)  # True
+```
+
+**本课为什么用它：** 熔断器有三种状态（CLOSED、OPEN、HALF_OPEN），用 `Enum` 定义可以防止拼写错误（如把 `"closed"` 写成 `"closd"`），IDE 也能提供自动补全。比用字符串常量更可靠。
+
+### `time.monotonic()`（单调时钟）
+
+`time.monotonic()` 返回一个单调递增的时间值（秒），不受系统时间调整（如 NTP 校准、手动改时间）的影响。适合测量时间间隔。
+
+```python
+import time
+
+start = time.monotonic()
+# ... 执行一些操作 ...
+elapsed = time.monotonic() - start
+print(f"耗时 {elapsed:.2f} 秒")
+```
+
+**本课为什么用它：** 熔断器需要精确测量「距离上次失败过了多久」来决定是否从 OPEN 转为 HALF_OPEN。`time.monotonic()` 不会因为系统时间被调整而产生负数或跳跃，比 `time.time()` 更适合做超时判断。
+
+### `@property`（属性装饰器）与惰性状态转换
+
+`@property` 让方法像属性一样被访问。结合内部状态检查可以实现惰性（lazy）的状态转换。
+
+```python
+class CircuitBreaker:
+    @property
+    def state(self) -> CircuitState:
+        """访问 state 时自动检查是否需要状态转换"""
+        if self._state == CircuitState.OPEN:
+            if time.monotonic() - self._last_failure > self.recovery_timeout:
+                self._transition(CircuitState.HALF_OPEN)  # 自动转换！
+        return self._state
+
+    @property
+    def can_execute(self) -> bool:
+        current = self.state  # 这里可能触发 OPEN -> HALF_OPEN 转换
+        return current != CircuitState.OPEN
+```
+
+**本课为什么用它：** 熔断器的 `state` 属性在每次被访问时自动检查恢复超时是否已过，如果是就从 OPEN 转为 HALF_OPEN。这种惰性求值（lazy evaluation）不需要后台定时器，减少了复杂性。
+
+### 状态机模式（设计模式）
+
+状态机用一组有限的状态和转换规则来建模系统行为。每个状态有明确的入口/出口条件。
+
+```python
+# 状态转换规则：
+# CLOSED  --[连续N次失败]--> OPEN
+# OPEN    --[超时后]-------> HALF_OPEN
+# HALF_OPEN --[成功]-------> CLOSED
+# HALF_OPEN --[失败]-------> OPEN
+
+def _transition(self, new_state: CircuitState) -> None:
+    old = self._state
+    self._state = new_state
+    if new_state == CircuitState.OPEN:
+        self._last_failure_time = time.monotonic()
+    if new_state == CircuitState.CLOSED:
+        self._consecutive_failures = 0
+```
+
+**本课为什么用它：** 熔断器就是一个经典的状态机。三种状态之间的转换规则清晰明确：正常时 CLOSED，失败过多变 OPEN（拒绝请求），超时后变 HALF_OPEN（允许探测），探测成功回到 CLOSED。这种模式让代码的行为可预测、易测试。
+
+### `@dataclass` 与 `field(default_factory=...)`
+
+`@dataclass` 自动生成数据类的构造函数等方法。`field(default_factory=list)` 为可变默认值提供工厂函数。
+
+```python
+from dataclasses import dataclass, field
+
+@dataclass
+class _ProviderEntry:
+    name: str
+    provider: LLMProvider
+    breaker: CircuitBreaker
+    spec: ProviderSpec | None = None
+    models: list[str] = field(default_factory=list)
+```
+
+**本课为什么用它：** `_ProviderEntry` 用数据类将提供者、熔断器和模型列表绑定在一起。`models` 用 `default_factory=list` 确保每个条目有独立的列表。
+
+### Pydantic — `Field`、`ConfigDict`、`model_validate`、`extra="allow"`
+
+Pydantic 是 Python 的数据验证库。`Field` 定义字段的默认值和描述；`ConfigDict` 配置模型行为；`model_validate` 从字典创建实例；`extra="allow"` 允许接受未预先定义的字段。
+
+```python
+from pydantic import BaseModel, Field, ConfigDict
+
+class ProviderConfig(BaseModel):
+    api_key: str | None = Field(default=None, description="API key")
+    models: list[str] = Field(default_factory=list)
+
+class ProvidersConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")  # 允许任意额外字段
+    openai: ProviderConfig = Field(default_factory=ProviderConfig)
+
+# model_validate 从字典创建实例
+pc = ProviderConfig.model_validate({"models": ["gpt-4o", "claude-3"]})
+```
+
+**本课为什么用它：** `ProvidersConfig` 使用 `extra="allow"` 让用户可以在 `config.json` 中添加任意自定义提供者（如 OpenRouter、百炼），而不需要修改 Python 代码。这是实现「配置驱动扩展」的关键——新提供者只需写入配置文件即可。
+
+### `getattr()`（动态属性访问）
+
+`getattr(obj, name, default)` 通过字符串名称获取属性，属性不存在时返回默认值。
+
+```python
+providers_cfg = getattr(config, "providers", None)
+prov_cfg = getattr(cfg.providers, provider_name, None)
+api_base = prov_cfg.api_base if prov_cfg else None
+```
+
+**本课为什么用它：** `ProviderManager._register_from_config()` 需要动态访问配置对象的属性（不同的提供者名称对应不同的属性）。`getattr` 让代码能处理可能不存在的配置字段。
+
+### `set`（集合）
+
+`set` 是无序的不重复元素集合，查找操作是 O(1) 时间复杂度。
+
+```python
+tried: set[str] = set()
+tried.add("volcengine")
+print("volcengine" in tried)  # True — O(1) 查找
+```
+
+**本课为什么用它：** `chat_with_failover()` 用 `tried: set[str] = set()` 记录已经尝试过的提供者，避免重复尝试同一个失败的提供者。集合的 `in` 检查比列表快。
+
+### `sorted()` 与 `key` 参数
+
+`sorted()` 返回排序后的新列表。`key` 参数指定排序依据。
+
+```python
+entries = [("openrouter", 20), ("volcengine", 10), ("anthropic", 5)]
+sorted_entries = sorted(entries, key=lambda t: t[1])
+# [("anthropic", 5), ("volcengine", 10), ("openrouter", 20)]
+```
+
+**本课为什么用它：** `_register_from_config()` 用 `entries.sort(key=lambda t: t[1].priority)` 按优先级排序提供者。优先级数字越小的排在前面，在故障转移时会被优先尝试。
+
+### `lambda` 表达式（匿名函数）
+
+`lambda` 创建简短的匿名函数，常用于 `sorted()`、`min()`、`max()` 的 `key` 参数。
+
+```python
+# 按 priority 排序
+entries.sort(key=lambda t: t[1].priority)
+
+# 找到最低优先级的提供者
+primary = min(entries, key=lambda e: e.priority)
+```
+
+**本课为什么用它：** 排序和查找操作需要一个「提取比较值」的函数，`lambda` 可以内联定义，不需要单独写一个命名函数。
+
+### `isinstance()`（类型检查）
+
+`isinstance(obj, type)` 检查对象是否是某个类型的实例。
+
+```python
+if isinstance(val, ProviderConfig):
+    result[name] = val
+elif isinstance(val, dict):
+    result[name] = ProviderConfig.model_validate(val)
+```
+
+**本课为什么用它：** `ProvidersConfig.all_providers()` 处理 `extra="allow"` 带来的动态字段时，需要判断值是已经验证过的 `ProviderConfig` 对象还是原始字典，以决定是否需要额外的验证步骤。
+
+### `sys.path.insert()`（修改模块搜索路径）
+
+`sys.path` 是 Python 查找模块的路径列表。`insert(0, path)` 将指定目录添加到搜索路径的最前面。
+
+```python
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# 现在可以 import ultrabot
+from ultrabot.config.schema import Config
+```
+
+**本课为什么用它：** 演示脚本 `scripts/demo_failover.py` 不在包目录内，需要手动将项目根目录添加到 `sys.path`，才能用 `from ultrabot.xxx import ...` 导入包内的模块。
+
+### `ConnectionError` 和 `RuntimeError`（内置异常）
+
+Python 有丰富的内置异常层次结构。`ConnectionError` 表示网络连接失败；`RuntimeError` 表示通用的运行时错误。
+
+```python
+# 模拟连接失败
+raise ConnectionError("Connection refused — 模拟宕机")
+
+# 所有提供者都失败了
+raise RuntimeError("All providers exhausted") from last_exc
+```
+
+**本课为什么用它：** 演示脚本用 `ConnectionError` 模拟提供者宕机。`ProviderManager` 用 `RuntimeError` 表示所有提供者都已耗尽。`from last_exc` 保留异常链，方便调试。
+
+### `raise ... from ...`（异常链）
+
+`raise NewError from original_error` 创建异常链，新异常记录了它的「原因」。
+
+```python
+try:
+    response = await provider.chat(...)
+except Exception as exc:
+    raise RuntimeError("All providers failed") from exc
+# 输出会显示：
+# RuntimeError: All providers failed
+# The above exception was caused by:
+# ConnectionError: Connection refused
+```
+
+**本课为什么用它：** `chat_with_failover()` 在所有提供者都失败后抛出 `RuntimeError`，用 `from last_exc` 保留最后一个失败的原始异常，方便排查到底是哪个提供者的什么错误导致了整体失败。
+
+### `asyncio.run()` 和 `asyncio.sleep()`
+
+`asyncio.run()` 启动异步事件循环并运行协程。`asyncio.sleep()` 是非阻塞的异步等待。
+
+```python
+import asyncio
+
+async def main():
+    print("等待恢复超时...")
+    await asyncio.sleep(2.1)  # 非阻塞等待 2.1 秒
+    print("超时已过")
+
+asyncio.run(main())
+```
+
+**本课为什么用它：** 演示脚本用 `asyncio.run(main())` 启动异步流程，用 `await asyncio.sleep(2.1)` 等待熔断器的恢复超时（2 秒）过去，然后验证熔断器是否从 OPEN 自动转为 HALF_OPEN。
+
+### `loguru.logger`（第三方日志库）
+
+`loguru` 提供开箱即用的日志功能，支持格式化、级别过滤、颜色输出等。
+
+```python
+from loguru import logger
+
+logger.info("Registered {} provider(s): {}", len(entries), ", ".join(names))
+logger.warning("Circuit breaker tripped after {} failures", count)
+logger.debug("Circuit: {} -> {}", old.value, new.value)
+
+# 自定义格式
+logger.remove()
+logger.add(sys.stderr, format="<green>{time:HH:mm:ss}</green> | <level>{message}</level>")
+```
+
+**本课为什么用它：** 熔断器状态转换、故障转移决策、提供者注册等关键事件都用 `logger` 记录。演示脚本自定义了日志格式（带颜色和时间戳），让输出更直观。生产环境中这些日志对排查问题至关重要。
+
+### `dict` 推导式和 `dict.items()`
+
+`dict.items()` 返回键值对；字典推导式可以快速构建新字典。
+
+```python
+# 遍历所有提供者配置
+for name, prov_cfg in providers_cfg.all_providers().items():
+    if prov_cfg.enabled:
+        register(name, prov_cfg)
+
+# 字典推导式构建健康状态
+health = {name: entry.breaker.can_execute for name, entry in self._entries.items()}
+```
+
+**本课为什么用它：** `health_check()` 用字典推导式一行代码生成所有提供者的健康状态快照。`_register_from_config()` 用 `.items()` 遍历所有提供者配置进行注册。
+
+### `pytest` 与 `time.sleep()`
+
+`pytest` 测试中用 `time.sleep()` 模拟时间流逝，验证基于时间的行为。
+
+```python
+import time
+import pytest
+
+def test_breaker_recovers_after_timeout():
+    cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.1)
+    cb.record_failure()
+    assert cb.state == CircuitState.OPEN
+    time.sleep(0.15)  # 等待恢复超时过去
+    assert cb.state == CircuitState.HALF_OPEN  # 自动转换
+```
+
+**本课为什么用它：** 测试需要验证熔断器在恢复超时后是否自动从 OPEN 转为 HALF_OPEN。将 `recovery_timeout` 设为很短的 0.1 秒，再 `sleep(0.15)` 秒，就可以快速测试这个时间相关的行为。
+
+### `unittest.mock.AsyncMock`（异步模拟对象）
+
+`AsyncMock` 是 `unittest.mock` 提供的异步模拟对象，模拟 `async def` 方法的返回值。
+
+```python
+from unittest.mock import AsyncMock
+
+mock_chat = AsyncMock(return_value=LLMResponse(content="Hello"))
+result = await mock_chat(messages=[...])
+assert result.content == "Hello"
+mock_chat.assert_called_once()
+```
+
+**本课为什么用它：** 演示脚本中的 `ControllableProvider` 用自定义的 `async def chat()` 替换真实的 API 调用，通过 `healthy` 开关控制成功/失败。这种 mock 技术让整个故障转移演示无需真实 API key 即可运行。
+
+### `__pydantic_extra__`（Pydantic 扩展字段）
+
+当 Pydantic 模型配置了 `extra="allow"` 时，未在模型中声明的额外字段会被存储在 `__pydantic_extra__` 字典中。
+
+```python
+class ProvidersConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    openai: ProviderConfig = Field(default_factory=ProviderConfig)
+
+# config.json 中添加未预定义的提供者
+# {"openrouter": {"apiKey": "sk-..."}}
+# 访问方式：
+for name, val in (self.__pydantic_extra__ or {}).items():
+    ...
+```
+
+**本课为什么用它：** `all_providers()` 方法合并内置字段和 `__pydantic_extra__` 中的自定义提供者，让用户可以在 `config.json` 中自由添加 OpenRouter、百炼、火山引擎等提供者，而不需要修改一行 Python 代码。

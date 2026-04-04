@@ -500,3 +500,250 @@ I work at a tech company called Acme...
 相关上下文，以及会话压缩以保持对话在上下文窗口限制内。
 
 ---
+
+## 本课使用的 Python 知识
+
+### `from __future__ import annotations`
+
+这是一个特殊的导入语句，让 Python 把所有类型注解当作字符串处理（延迟求值），而不是在定义时立即解析。这样可以使用 `list[float] | None`、`dict[str, Any]` 等新式语法而不受 Python 版本限制。
+
+```python
+from __future__ import annotations
+
+def process(items: list[int] | None = None) -> dict[str, Any]:
+    ...
+```
+
+**为什么在本课中使用：** 本课代码使用了 `list[float] | None`、`dict[str, Any]` 等类型注解，加上这一行可以在 Python 3.9+ 上正常运行。
+
+### `@dataclass` 与 `field(default_factory=...)`
+
+`@dataclass` 自动生成 `__init__`、`__repr__` 等方法。对于列表、字典等可变类型的默认值，必须使用 `field(default_factory=list)` 而不能直接写 `= []`，否则所有实例会共享同一个列表。
+
+```python
+from dataclasses import dataclass, field
+import time
+
+@dataclass
+class MemoryEntry:
+    id: str
+    content: str
+    tags: list[str] = field(default_factory=list)      # 每个实例独立的空列表
+    metadata: dict = field(default_factory=dict)        # 每个实例独立的空字典
+    timestamp: float = field(default_factory=time.time) # 用函数返回值做默认值
+```
+
+**为什么在本课中使用：** `MemoryEntry` 和 `SearchResult` 都有列表和字典类型的字段，用 `field(default_factory=...)` 确保每条记忆条目有自己独立的数据副本。
+
+### `hashlib.sha256()` 哈希计算
+
+`hashlib` 模块提供各种安全哈希算法。`sha256` 可以对任意数据计算固定长度的摘要值，常用于数据去重和完整性校验。
+
+```python
+import hashlib
+
+content = "Python is great"
+hash_hex = hashlib.sha256(content.encode()).hexdigest()
+short_hash = hash_hex[:16]  # 取前 16 个字符作为简短标识
+print(short_hash)  # 例如 "a1b2c3d4e5f6a7b8"
+```
+
+**为什么在本课中使用：** 记忆存储用内容的 SHA-256 哈希作为去重键——相同内容的哈希值相同，存入前先检查是否已存在，避免重复存储。
+
+### `sqlite3` SQLite 数据库操作
+
+`sqlite3` 是 Python 内置的 SQLite 数据库接口，无需安装额外软件即可使用关系型数据库。支持 SQL 语句执行、事务管理和游标操作。
+
+```python
+import sqlite3
+
+conn = sqlite3.connect("my_data.db")
+conn.execute("CREATE TABLE IF NOT EXISTS items (id TEXT, value TEXT)")
+conn.execute("INSERT INTO items VALUES (?, ?)", ("key1", "hello"))
+conn.commit()
+
+rows = conn.execute("SELECT * FROM items").fetchall()
+print(rows)  # [('key1', 'hello')]
+conn.close()
+```
+
+**为什么在本课中使用：** 长期记忆需要持久化存储，SQLite 是轻量级的嵌入式数据库，无需启动独立服务，非常适合本地知识库。配合 FTS5 虚拟表还能实现全文搜索。
+
+### `json.dumps()` 和 `json.loads()` JSON 序列化
+
+`json.dumps()` 将 Python 对象（字典、列表等）转换为 JSON 字符串；`json.loads()` 将 JSON 字符串解析回 Python 对象。
+
+```python
+import json
+
+data = {"name": "ultrabot", "version": 2}
+text = json.dumps(data)      # '{"name": "ultrabot", "version": 2}'
+parsed = json.loads(text)    # {'name': 'ultrabot', 'version': 2}
+```
+
+**为什么在本课中使用：** SQLite 不直接支持存储字典，所以将 `metadata` 字典用 `json.dumps()` 序列化为字符串存入数据库，读取时再用 `json.loads()` 还原。
+
+### `math.log()` 和 `math.exp()` 数学函数
+
+`math.log()` 计算自然对数，`math.exp()` 计算自然指数（e 的幂）。这两个函数是指数衰减公式的核心。
+
+```python
+import math
+
+half_life = 30  # 半衰期 30 天
+lam = math.log(2) / half_life  # 衰减常数 λ
+age_days = 60
+decay = math.exp(-lam * age_days)
+print(f"60 天后的衰减因子: {decay:.2f}")  # 约 0.25
+```
+
+**为什么在本课中使用：** 时间衰减评分机制让旧记忆的搜索得分随时间降低。公式 `exp(-λ × age)` 实现了指数衰减——半衰期后得分减半，体现"近期信息更重要"。
+
+### `time.time()` 时间戳
+
+`time.time()` 返回当前时间的 Unix 时间戳（从 1970 年 1 月 1 日至今的秒数），是一个浮点数。
+
+```python
+import time
+
+now = time.time()
+print(now)  # 例如 1700000000.123456
+```
+
+**为什么在本课中使用：** 每条记忆存入时记录时间戳，搜索时计算 `(now - timestamp) / 86400` 得到条目年龄（天），用于时间衰减评分。
+
+### `pathlib.Path` 面向对象的路径操作
+
+`pathlib.Path` 提供面向对象的文件系统路径操作，支持 `/` 运算符拼接、`.parent` 获取父目录、`.mkdir()` 创建目录等。
+
+```python
+from pathlib import Path
+
+db_path = Path("/home/user/.ultrabot") / "memory.db"
+db_path.parent.mkdir(parents=True, exist_ok=True)
+```
+
+**为什么在本课中使用：** `MemoryStore` 接收数据库路径作为参数，需要自动创建父目录。`Path` 让路径操作更简洁安全。
+
+### `typing.Any` 类型注解
+
+`Any` 表示"任意类型"，相当于告诉类型检查器"这个变量可以是任何东西"。在无法确定具体类型时使用。
+
+```python
+from typing import Any
+
+def process(data: dict[str, Any]) -> None:
+    # data 的值可以是字符串、数字、列表……任何类型
+    pass
+```
+
+**为什么在本课中使用：** 记忆条目的 `metadata` 字段是灵活的键值对，值可以是任何类型，所以标注为 `dict[str, Any]`。
+
+### `lambda` 表达式
+
+`lambda` 创建匿名的小型函数，通常用于排序的 `key` 参数或简单的回调。
+
+```python
+entries = [("a", 3), ("b", 1), ("c", 2)]
+entries.sort(key=lambda e: e[1])  # 按第二个元素排序
+print(entries)  # [('b', 1), ('c', 2), ('a', 3)]
+```
+
+**为什么在本课中使用：** 搜索结果排序时用 `entries.sort(key=lambda e: e.score, reverse=True)` 按分数从高到低排列。
+
+### 列表推导和 `sum()` + 生成器表达式
+
+列表推导可以在一行内从可迭代对象生成新列表。`sum()` 配合生成器表达式可以简洁地计算总和。
+
+```python
+# 列表推导
+names = [entry.name for entry in results if entry.score > 0.5]
+
+# sum + 生成器表达式（不创建中间列表，更省内存）
+total = sum(len(m.get("content", "")) // 4 for m in messages)
+```
+
+**为什么在本课中使用：** `ContextEngine.compact()` 用 `sum(...)` 配合生成器表达式估算所有消息的总 token 数，一行代码完成遍历和累加。
+
+### `dict.get()` 字典安全取值
+
+`dict.get(key, default)` 获取字典中指定键的值，如果键不存在则返回默认值而不是抛出 `KeyError`。
+
+```python
+message = {"role": "user", "content": "Hello"}
+content = message.get("content", "")  # "Hello"
+tool = message.get("tool_id", None)   # None（键不存在）
+```
+
+**为什么在本课中使用：** 处理消息字典时，某些字段可能不存在（如 `"content"`），用 `.get()` 安全取值避免程序崩溃。
+
+### 三引号多行字符串
+
+Python 的三引号（`"""` 或 `'''`）可以创建跨越多行的字符串，常用于 SQL 语句、文档字符串等。
+
+```python
+sql = """
+    CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL
+    );
+"""
+```
+
+**为什么在本课中使用：** 数据库初始化需要执行大段 SQL（创建表、FTS5 虚拟表、触发器、索引），三引号字符串让 SQL 代码清晰可读。
+
+### `pytest.fixture` 测试 Fixture
+
+`@pytest.fixture` 装饰器定义测试前的准备工作（如创建数据库），测试函数通过参数名自动注入 fixture 的返回值。`yield` 可以实现"先准备、后清理"的模式。
+
+```python
+import pytest
+
+@pytest.fixture
+def store(tmp_path):
+    s = MemoryStore(db_path=tmp_path / "test.db")
+    yield s       # 测试函数拿到 s
+    s.close()     # 测试结束后自动清理
+
+def test_add(store):
+    store.add("hello")
+    assert store.count() == 1
+```
+
+**为什么在本课中使用：** 每个测试需要一个干净的数据库。fixture 自动在临时目录创建数据库，测试结束后关闭连接，确保测试间互不干扰。
+
+### `pytest.approx` 近似比较
+
+浮点数计算有精度误差，直接用 `==` 比较不可靠。`pytest.approx()` 允许在一定误差范围内比较浮点数。
+
+```python
+import pytest
+
+assert 0.1 + 0.2 == pytest.approx(0.3)           # 通过（默认绝对误差 1e-6）
+assert 0.499 == pytest.approx(0.5, rel=0.01)      # 通过（相对误差 1%）
+```
+
+**为什么在本课中使用：** 测试时间衰减函数时，`_temporal_decay(30)` 的理论值是 0.5（半衰期），但浮点计算可能有微小偏差，用 `approx` 进行容差比较。
+
+### `loguru` 第三方日志库
+
+`loguru` 提供开箱即用的日志记录，比标准库 `logging` 更简洁。支持 `{}` 占位符格式化。
+
+```python
+from loguru import logger
+
+logger.info("MemoryStore 初始化完成，路径: {}", db_path)
+```
+
+**为什么在本课中使用：** 记忆存储的各种操作（初始化、搜索、清理）需要记录日志，`loguru` 让日志代码简洁且信息丰富。
+
+### 条件表达式（三元运算符）
+
+Python 的条件表达式 `a if condition else b` 可以在一行内完成条件选择。
+
+```python
+value = timestamp or time.time()       # 如果 timestamp 为 None/0，使用当前时间
+method = "fts" if has_fts else "like"   # 根据条件选择搜索方法
+```
+
+**为什么在本课中使用：** 代码中多处使用简洁的条件表达式，如 `timestamp or time.time()` 处理可选的时间戳参数、`json.loads(metadata_str) if metadata_str else {}` 处理可能为空的 JSON 字段。
