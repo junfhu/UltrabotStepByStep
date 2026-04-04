@@ -40,6 +40,7 @@ class CircuitBreaker:
         self._consecutive_failures: int = 0
         self._last_failure_time: float = 0.0
         self._half_open_calls: int = 0
+        self._reopened_from_half_open: bool = False
 
     def record_success(self) -> None:
         """一次成功的调用会重置熔断器。"""
@@ -52,10 +53,10 @@ class CircuitBreaker:
     def record_failure(self) -> None:
         """一次失败的调用 — 当达到阈值时触发熔断。"""
         self._consecutive_failures += 1
-        self._last_failure_time = time.monotonic()
 
         if self._state == CircuitState.HALF_OPEN:
             logger.warning("Re-opening after failure during half-open probe")
+            self._reopened_from_half_open = True
             self._transition(CircuitState.OPEN)
             return
 
@@ -70,13 +71,18 @@ class CircuitBreaker:
     def state(self) -> CircuitState:
         """当前状态，超时后自动从 OPEN 转换为 HALF_OPEN。"""
         if self._state == CircuitState.OPEN:
-            elapsed = time.monotonic() - self._last_failure_time
-            if elapsed >= self.recovery_timeout:
-                logger.info(
-                    "Recovery timeout ({:.0f}s) elapsed — entering half-open",
-                    self.recovery_timeout,
-                )
-                self._transition(CircuitState.HALF_OPEN)
+            if self._reopened_from_half_open:
+                # Reset recovery timer so the full timeout restarts from now.
+                self._reopened_from_half_open = False
+                self._last_failure_time = time.monotonic()
+            else:
+                elapsed = time.monotonic() - self._last_failure_time
+                if elapsed >= self.recovery_timeout:
+                    logger.info(
+                        "Recovery timeout ({:.0f}s) elapsed — entering half-open",
+                        self.recovery_timeout,
+                    )
+                    self._transition(CircuitState.HALF_OPEN)
         return self._state
 
     @property
@@ -92,6 +98,8 @@ class CircuitBreaker:
     def _transition(self, new_state: CircuitState) -> None:
         old = self._state
         self._state = new_state
+        if new_state == CircuitState.OPEN:
+            self._last_failure_time = time.monotonic()
         if new_state == CircuitState.HALF_OPEN:
             self._half_open_calls = 0
         if new_state == CircuitState.CLOSED:

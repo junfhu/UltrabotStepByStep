@@ -10,7 +10,7 @@ from loguru import logger
 
 from ultrabot.providers.base import LLMProvider, LLMResponse
 from ultrabot.providers.circuit_breaker import CircuitBreaker, CircuitState
-from ultrabot.providers.registry import ProviderSpec, find_by_name, find_by_keyword
+from ultrabot.providers.registry import ProviderSpec, PROVIDERS, find_by_name, find_by_keyword
 
 
 @dataclass
@@ -31,6 +31,70 @@ class ProviderManager:
         self._entries: dict[str, _ProviderEntry] = {}
         self._model_index: dict[str, str] = {}   # 模型 -> 提供者名称
         self._register_from_config(config)
+
+    # -- 注册 --
+
+    def _register_from_config(self, config: Any) -> None:
+        """从 Config 对象中读取已启用的提供者并注册。
+
+        遍历配置中所有提供者（内置 + 自定义），按 priority 排序后依次注册。
+        通过 find_by_name() 查找注册表中的 ProviderSpec，获取默认 URL 和
+        后端类型；对于未在注册表中的自定义提供者，默认使用 OpenAI 兼容后端。
+        """
+        from ultrabot.config.schema import ProviderConfig
+        from ultrabot.providers.anthropic_provider import AnthropicProvider
+        from ultrabot.providers.openai_compat import OpenAICompatProvider
+
+        providers_cfg = getattr(config, "providers", None)
+        if providers_cfg is None:
+            return
+
+        all_provs = providers_cfg.all_providers()
+
+        # 收集已启用的提供者，按 priority 排序
+        entries: list[tuple[str, ProviderConfig, ProviderSpec | None]] = []
+        for name, prov_cfg in all_provs.items():
+            if not prov_cfg.enabled:
+                continue
+            spec = find_by_name(name)         # 可能为 None（自定义提供者）
+            entries.append((name, prov_cfg, spec))
+
+        entries.sort(key=lambda t: t[1].priority)
+
+        for name, prov_cfg, spec in entries:
+            api_key = prov_cfg.api_key or config.get_api_key(name)
+            api_base = prov_cfg.api_base or (spec.default_api_base if spec else None)
+
+            # 实例化对应的提供者
+            if spec and spec.backend == "anthropic":
+                provider: LLMProvider = AnthropicProvider(
+                    api_key=api_key, api_base=api_base,
+                )
+            else:
+                provider = OpenAICompatProvider(
+                    api_key=api_key, api_base=api_base,
+                )
+
+            models = list(prov_cfg.models)
+            entry = _ProviderEntry(
+                name=name,
+                provider=provider,
+                breaker=CircuitBreaker(),
+                spec=spec,
+                models=models,
+            )
+            self._entries[name] = entry
+
+            # 建立 model -> provider 索引
+            for model_id in models:
+                if model_id not in self._model_index:
+                    self._model_index[model_id] = name
+
+        if self._entries:
+            logger.info("Registered {} provider(s): {}", len(self._entries),
+                        ", ".join(self._entries))
+        if self._model_index:
+            logger.debug("Model index: {}", dict(self._model_index))
 
     async def chat_with_failover(
         self,
