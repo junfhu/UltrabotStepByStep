@@ -45,10 +45,11 @@ def test_cli_app_exists():
 
 
 def test_version_callback():
-    """版本标志触发 SystemExit。"""
+    """版本标志触发 typer.Exit。"""
+    from click.exceptions import Exit
     from ultrabot.cli.commands import version_callback
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(Exit):
         version_callback(True)
 
 
