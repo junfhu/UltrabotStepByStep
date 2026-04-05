@@ -79,6 +79,23 @@ while True:
 
 ### 步骤 2：构建 Agent 类
 
+> **前置提醒：** 从本课开始，代码文件放在 `ultrabot/` 子目录下并通过 `from ultrabot.xxx import ...` 导入。确保你在课程 1 中已经创建了以下两个文件，否则导入会失败：
+>
+> - **`pyproject.toml`** — 项目元数据，让 `pip install -e .` 能以开发模式安装包。
+> - **`ultrabot/__init__.py`** — 可以是空文件，但必须存在，它告诉 Python "`ultrabot/` 是一个包"。
+>
+> 如果还没有，现在补上：
+> ```bash
+> # 确认 pyproject.toml 在项目根目录
+> cat pyproject.toml
+>
+> # 确认 __init__.py 存在（空文件即可）
+> touch ultrabot/__init__.py
+>
+> # 以开发模式安装，之后代码修改即时生效
+> pip install -e .
+> ```
+
 现在让我们将循环逻辑提取到一个正式的类中。这对应了真实代码库中 `ultrabot/agent/agent.py`：
 
 ```python
