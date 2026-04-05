@@ -20,11 +20,14 @@
 - 出站消息的扇出（fan-out）模式
 - 用于重试耗尽的消息的死信队列
 - 使用 `asyncio.Event` 实现优雅关闭
+- 编写端到端集成测试验证完整消息链路
 
 **新建文件：**
 - `ultrabot/bus/__init__.py` — 公共重导出
 - `ultrabot/bus/events.py` — `InboundMessage` 和 `OutboundMessage` 数据类
 - `ultrabot/bus/queue.py` — 带优先级队列的 `MessageBus`
+- `tests/test_bus_integration.py` — 端到端集成测试（多通道路由、优先级调度）
+- `tests/test_bus_real_agent.py` — 真实 Agent 端到端测试（可选，需 API Key）
 
 ### 步骤 1：消息数据类
 
@@ -323,20 +326,365 @@ def test_bus_outbound_fanout():
     asyncio.run(_run())
 ```
 
+### 步骤 6：集成测试 — 端到端消息流
+
+前面的单元测试验证了总线的各个零件。现在我们把它们串起来，
+模拟真实场景：**入站消息 → 处理器 → 出站回复**。
+
+创建 `tests/test_bus_integration.py`：
+
+```python
+# tests/test_bus_integration.py
+"""端到端集成测试：验证消息从入站到出站的完整流转。"""
+import asyncio
+from ultrabot.bus.events import InboundMessage, OutboundMessage
+from ultrabot.bus.queue import MessageBus
+
+
+def test_end_to_end_message_flow():
+    """模拟真实消息流：入站 → 处理 → 出站。"""
+    async def _run():
+        bus = MessageBus()
+        delivered: list[OutboundMessage] = []
+
+        # 模拟 Agent 处理：接收入站消息，返回出站回复
+        async def agent_handler(msg: InboundMessage) -> OutboundMessage:
+            reply_text = f"Echo: {msg.content}"
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=reply_text,
+            )
+
+        # 模拟通道适配器：收集出站消息
+        async def channel_sender(msg: OutboundMessage):
+            delivered.append(msg)
+
+        bus.set_inbound_handler(agent_handler)
+        bus.subscribe(channel_sender)
+
+        # 发布一条来自 Telegram 用户的消息
+        await bus.publish(InboundMessage(
+            channel="telegram", sender_id="user_123",
+            chat_id="chat_456", content="你好，Ultrabot！",
+        ))
+
+        # 启动分发循环
+        task = asyncio.create_task(bus.dispatch_inbound())
+        await asyncio.sleep(0.3)
+        bus.shutdown()
+        await task
+
+        # 验证出站消息
+        assert len(delivered) == 1
+        assert delivered[0].channel == "telegram"
+        assert delivered[0].chat_id == "chat_456"
+        assert delivered[0].content == "Echo: 你好，Ultrabot！"
+
+    asyncio.run(_run())
+
+
+def test_multi_channel_routing():
+    """多通道消息应独立路由到各自的出站订阅者。"""
+    async def _run():
+        bus = MessageBus()
+        telegram_out: list[OutboundMessage] = []
+        discord_out: list[OutboundMessage] = []
+
+        async def agent_handler(msg: InboundMessage) -> OutboundMessage:
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=f"[{msg.channel}] {msg.content}",
+            )
+
+        # 两个订阅者按通道过滤
+        async def telegram_sender(msg: OutboundMessage):
+            if msg.channel == "telegram":
+                telegram_out.append(msg)
+
+        async def discord_sender(msg: OutboundMessage):
+            if msg.channel == "discord":
+                discord_out.append(msg)
+
+        bus.set_inbound_handler(agent_handler)
+        bus.subscribe(telegram_sender)
+        bus.subscribe(discord_sender)
+
+        # 发布两条来自不同通道的消息
+        await bus.publish(InboundMessage(
+            channel="telegram", sender_id="u1",
+            chat_id="tg_1", content="来自 Telegram",
+        ))
+        await bus.publish(InboundMessage(
+            channel="discord", sender_id="u2",
+            chat_id="dc_1", content="来自 Discord",
+        ))
+
+        task = asyncio.create_task(bus.dispatch_inbound())
+        await asyncio.sleep(0.5)
+        bus.shutdown()
+        await task
+
+        assert len(telegram_out) == 1
+        assert telegram_out[0].content == "[telegram] 来自 Telegram"
+        assert len(discord_out) == 1
+        assert discord_out[0].content == "[discord] 来自 Discord"
+
+    asyncio.run(_run())
+
+
+def test_priority_dispatch_order():
+    """高优先级消息应先被处理，即使后发布。"""
+    async def _run():
+        bus = MessageBus()
+        order: list[str] = []
+
+        async def handler(msg: InboundMessage) -> OutboundMessage | None:
+            order.append(msg.content)
+            return None  # 不生成出站消息
+
+        bus.set_inbound_handler(handler)
+
+        # 先发普通消息，再发 VIP 消息
+        await bus.publish(InboundMessage(
+            channel="t", sender_id="1", chat_id="1",
+            content="normal", priority=0,
+        ))
+        await bus.publish(InboundMessage(
+            channel="t", sender_id="2", chat_id="2",
+            content="vip", priority=10,
+        ))
+
+        task = asyncio.create_task(bus.dispatch_inbound())
+        await asyncio.sleep(0.3)
+        bus.shutdown()
+        await task
+
+        # VIP 应排在第一位
+        assert order == ["vip", "normal"]
+
+    asyncio.run(_run())
+```
+
+这三个测试覆盖了三个核心场景：
+
+| 测试 | 验证点 |
+|---|---|
+| `test_end_to_end_message_flow` | 完整链路：发布 → 处理器 → 出站订阅者 |
+| `test_multi_channel_routing` | 多通道消息各自路由到对应的订阅者 |
+| `test_priority_dispatch_order` | 优先级队列确保 VIP 消息先被处理 |
+
+### 步骤 7：真实 Agent 端到端测试（可选）
+
+如果你已经配置了 LLM API 密钥，可以进一步测试**真正调用大模型**的完整链路。
+
+凭据解析优先级：
+1. 环境变量 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`
+2. `~/.ultrabot/config.json` 中的默认提供者配置（`agents.defaults.provider`）
+
+两者都没有时自动跳过。
+
+创建 `tests/test_bus_real_agent.py`：
+
+```python
+# tests/test_bus_real_agent.py
+"""端到端真实测试：入站消息 → MessageBus → Agent(LLM) → 出站回复。
+
+凭据解析优先级：
+  1. 环境变量 OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL
+  2. ~/.ultrabot/config.json 中的默认提供者配置
+
+运行：
+  pytest tests/test_bus_real_agent.py -v -s
+"""
+import asyncio
+import os
+
+import pytest
+from openai import OpenAI
+
+from ultrabot.agent import Agent
+from ultrabot.bus.events import InboundMessage, OutboundMessage
+from ultrabot.bus.queue import MessageBus
+
+
+# ── 凭据解析：环境变量优先，否则读取 config.json ──
+
+def _resolve_credentials() -> tuple[str | None, str | None, str | None]:
+    """返回 (api_key, base_url, model)，找不到则返回 None。"""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    base_url = os.environ.get("OPENAI_BASE_URL")
+    model = os.environ.get("OPENAI_MODEL")
+
+    if api_key and base_url:
+        return api_key, base_url, model or "gpt-4o-mini"
+
+    # 回退：从 ~/.ultrabot/config.json 读取
+    try:
+        from ultrabot.config import load_config
+        cfg = load_config()
+        provider_name = cfg.agents.defaults.provider
+        prov = cfg.providers.all_providers().get(provider_name)
+        if prov and prov.api_key and prov.enabled:
+            return (
+                api_key or prov.api_key,
+                base_url or prov.api_base,
+                model or cfg.agents.defaults.model,
+            )
+    except Exception:
+        pass
+
+    return api_key, base_url, model
+
+
+_api_key, _base_url, _model = _resolve_credentials()
+
+_skip = pytest.mark.skipif(
+    not _api_key or not _base_url,
+    reason="No LLM credentials: set OPENAI_API_KEY + OPENAI_BASE_URL, "
+           "or configure ~/.ultrabot/config.json",
+)
+
+
+def _make_agent() -> Agent:
+    """构建一个连接到真实 LLM 的 Agent。"""
+    client = OpenAI(api_key=_api_key, base_url=_base_url)
+    return Agent(client=client, model=_model)
+
+
+@_skip
+def test_bus_with_real_agent():
+    """完整链路：用户消息 → 总线 → Agent → LLM → 出站回复。"""
+    agent = _make_agent()
+
+    async def _run():
+        bus = MessageBus()
+        delivered: list[OutboundMessage] = []
+
+        async def agent_handler(msg: InboundMessage) -> OutboundMessage:
+            reply = await agent.run(msg.content, session_key=msg.session_key)
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=reply,
+            )
+
+        async def channel_sender(msg: OutboundMessage):
+            delivered.append(msg)
+
+        bus.set_inbound_handler(agent_handler)
+        bus.subscribe(channel_sender)
+
+        await bus.publish(InboundMessage(
+            channel="telegram", sender_id="u1",
+            chat_id="c1", content="请用一句话介绍你自己",
+        ))
+
+        task = asyncio.create_task(bus.dispatch_inbound())
+        await asyncio.sleep(30)
+        bus.shutdown()
+        await task
+
+        assert len(delivered) == 1
+        assert len(delivered[0].content) > 0
+        print(f"\n[Agent replied] {delivered[0].content}")
+
+    asyncio.run(_run())
+
+
+@_skip
+def test_bus_multi_turn_conversation():
+    """多轮对话：验证总线能串行处理多条消息并保持会话。"""
+    agent = _make_agent()
+
+    async def _run():
+        bus = MessageBus()
+        delivered: list[OutboundMessage] = []
+
+        async def agent_handler(msg: InboundMessage) -> OutboundMessage:
+            reply = await agent.run(msg.content, session_key=msg.session_key)
+            return OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=reply,
+            )
+
+        async def channel_sender(msg: OutboundMessage):
+            delivered.append(msg)
+
+        bus.set_inbound_handler(agent_handler)
+        bus.subscribe(channel_sender)
+
+        # 第一轮
+        await bus.publish(InboundMessage(
+            channel="telegram", sender_id="u1",
+            chat_id="c1", content="我的名字叫小明，请记住",
+        ))
+
+        task = asyncio.create_task(bus.dispatch_inbound())
+        await asyncio.sleep(30)
+
+        # 第二轮 — 测试 Agent 是否记住了上下文
+        await bus.publish(InboundMessage(
+            channel="telegram", sender_id="u1",
+            chat_id="c1", content="我叫什么名字？",
+        ))
+        await asyncio.sleep(30)
+
+        bus.shutdown()
+        await task
+
+        assert len(delivered) == 2
+        print(f"\n[Round 1] {delivered[0].content}")
+        print(f"[Round 2] {delivered[1].content}")
+        assert "小明" in delivered[1].content
+
+    asyncio.run(_run())
+```
+
+如果已配置 `~/.ultrabot/config.json`，直接运行即可：
+
+```bash
+python -m pytest tests/test_bus_real_agent.py -v -s
+```
+
+也可以用环境变量覆盖配置文件中的设置：
+
+```bash
+OPENAI_API_KEY=你的密钥 \
+OPENAI_BASE_URL=https://ark.cn-beijing.volces.com/api/v3 \
+OPENAI_MODEL=ep-xxx \
+  python -m pytest tests/test_bus_real_agent.py -v -s
+```
+
 ### 检查点
 
 ```bash
-python -m pytest tests/test_bus.py -v
+python -m pytest tests/ -v
 ```
 
-预期结果：全部 4 个测试通过。消息总线现在已准备好放置在通道和
-智能体之间。
+预期结果：如果 `~/.ultrabot/config.json` 已配置提供者，全部 9 个测试通过；
+否则 7 个通过、2 个跳过（真实 Agent 测试在找不到 LLM 凭据时自动跳过）。
+
+```
+tests/test_bus.py::test_priority_ordering              PASSED
+tests/test_bus.py::test_session_key_derivation          PASSED
+tests/test_bus.py::test_bus_dispatch_and_dead_letter     PASSED
+tests/test_bus.py::test_bus_outbound_fanout              PASSED
+tests/test_bus_integration.py::test_end_to_end_message_flow   PASSED
+tests/test_bus_integration.py::test_multi_channel_routing     PASSED
+tests/test_bus_integration.py::test_priority_dispatch_order   PASSED
+tests/test_bus_real_agent.py::test_bus_with_real_agent         PASSED (or SKIPPED)
+tests/test_bus_real_agent.py::test_bus_multi_turn_conversation PASSED (or SKIPPED)
+```
 
 ### 本课成果
 
 一个事件驱动的 `MessageBus`，具有用于入站消息的 `asyncio.PriorityQueue`
 （优先级越高 = 越先处理）、带死信语义的重试循环，
-以及将出站消息扇出到多个订阅者的分发机制。
+以及将出站消息扇出到多个订阅者的分发机制。集成测试验证了
+完整的入站→处理→出站链路、多通道路由和优先级调度。
 
 ---
 

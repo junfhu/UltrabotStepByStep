@@ -163,6 +163,7 @@ class Config(BaseSettings):
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    channels: dict = Field(default_factory=dict)
 
     def get_provider(self, model: str | None = None) -> str:
         """从模型字符串中解析出提供者名称。
