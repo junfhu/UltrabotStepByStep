@@ -1,0 +1,38 @@
+{
+  "agents": {
+    "defaults": {
+      "model": "minimax-m2.5",
+      "provider": "openai_compatible",
+      "maxTokens": 16384,
+      "contextWindowTokens": 200000,
+      "temperature": 0.5,
+      "maxToolIterations": 10
+    }
+  },
+  "providers": {
+    "openaiCompatible": {
+      "apiBase": "https://ark.cn-beijing.volces.com/api/coding/v3",
+      "priority": 1,
+      "models": ["minimax-m2.5", "deepseek-chat-v3"]
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": false,
+      "token": "${TELEGRAM_BOT_TOKEN}",
+      "allowFrom": []
+    },
+    "discord": {
+      "enabled": false,
+      "token": "${DISCORD_BOT_TOKEN}",
+      "allowFrom": [],
+      "allowedGuilds": []
+    },
+    "slack": {
+      "enabled": false,
+      "botToken": "${SLACK_BOT_TOKEN}",
+      "appToken": "${SLACK_APP_TOKEN}",
+      "allowFrom": []
+    }
+  }
+}

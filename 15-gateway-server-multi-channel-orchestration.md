@@ -260,6 +260,90 @@ from ultrabot.gateway.server import Gateway
 __all__ = ["Gateway"]
 ```
 
+### 步骤 6：配置与运行网关
+
+网关通过 `~/.ultrabot/config.json` 中的 `channels` 部分决定启用哪些通道。
+配置值支持 `${ENV_VAR}` 语法引用环境变量，网关启动时自动展开。
+
+#### 完整配置示例
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "model": "minimax-m2.5",
+      "provider": "openai_compatible"
+    }
+  },
+  "providers": {
+    "openaiCompatible": {
+      "apiBase": "https://ark.cn-beijing.volces.com/api/coding/v3",
+      "priority": 1,
+      "models": ["minimax-m2.5"]
+    }
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "token": "${TELEGRAM_BOT_TOKEN}",
+      "allowFrom": []
+    },
+    "discord": {
+      "enabled": true,
+      "token": "${DISCORD_BOT_TOKEN}",
+      "allowFrom": [],
+      "allowedGuilds": []
+    },
+    "slack": {
+      "enabled": false,
+      "botToken": "${SLACK_BOT_TOKEN}",
+      "appToken": "${SLACK_APP_TOKEN}",
+      "allowFrom": []
+    }
+  }
+}
+```
+
+只需将 `enabled` 设为 `true` 并设置对应的环境变量，即可启用任意通道组合。
+未启用的通道不会被加载，其 SDK 也不需要安装。
+
+#### 各通道的环境变量
+
+| 通道 | 环境变量 | 获取方式 |
+|------|---------|---------|
+| Telegram | `TELEGRAM_BOT_TOKEN` | @BotFather `/newbot` |
+| Discord | `DISCORD_BOT_TOKEN` | [Developer Portal](https://discord.com/developers/applications) → Bot → Reset Token |
+| Slack | `SLACK_BOT_TOKEN` + `SLACK_APP_TOKEN` | [Slack API](https://api.slack.com/apps) → OAuth & Socket Mode |
+
+#### 运行网关
+
+```bash
+# 设置环境变量
+export TELEGRAM_BOT_TOKEN="..."
+export DISCORD_BOT_TOKEN="..."
+
+# 启动网关（启动所有已启用的通道）
+python -m ultrabot.gateway
+```
+
+预期日志输出：
+
+```
+INFO | Gateway starting up
+INFO | Channel 'telegram' registered
+INFO | Channel 'discord' registered
+INFO | Telegram channel started (polling)
+INFO | Discord bot connected as Ultrabot#1234
+INFO | Gateway started — dispatching messages
+```
+
+按 `Ctrl+C` 触发优雅关闭，所有通道会依次停止。
+
+> **排查提示：**
+> - `ValidationError: channels — Extra inputs are not permitted` → 确认 `Config` 模式中已添加 `channels: dict` 字段。
+> - 某个通道不启动？检查对应的 `enabled` 是否为 `true`，以及 SDK 是否已安装。
+> - Token 没有被展开（仍然是 `${...}`）？确认环境变量名拼写正确，且已在当前 shell 中 `export`。
+
 ### 测试
 
 ```python

@@ -291,6 +291,180 @@ class SlackChannel(BaseChannel):
 | 认证方式 | Bot token | Bot token + intents | Bot token + App token |
 | 需要快速确认？ | 否 | 否 | **是（3秒）** |
 
+### 步骤 6：Discord 机器人创建与连接
+
+在运行 `DiscordChannel` 之前，你需要在 Discord 开发者平台创建一个机器人并将它邀请到你的服务器。
+
+#### 6.1 创建 Discord 应用和机器人
+
+1. 打开 [Discord Developer Portal](https://discord.com/developers/applications)，登录你的 Discord 账号。
+2. 点击 **New Application**，输入应用名称（例如 `Ultrabot`），点击 **Create**。
+3. 在左侧菜单进入 **Bot** 页面，点击 **Add Bot** → **Yes, do it!**（新版本可能已自动创建）。
+4. 在 Bot 页面可以看到你的机器人用户名，点击 **Reset Token** 获取 Bot Token。
+   > **重要：** Token 只显示一次，请立即复制并妥善保存。**绝对不要**将 Token 提交到 Git 仓库。
+
+#### 6.2 开启 Privileged Intents
+
+Discord 要求机器人显式声明需要的特权 Intents：
+
+1. 仍然在 **Bot** 页面，向下滚动到 **Privileged Gateway Intents** 部分。
+2. 开启以下选项：
+   - **Message Content Intent** — 必须开启，否则 `message.content` 会是空字符串。
+   - **Server Members Intent** — 如果你需要获取成员列表（本课可选）。
+3. 点击 **Save Changes**。
+
+#### 6.3 邀请机器人到服务器
+
+1. 在左侧菜单进入 **OAuth2** → **URL Generator**。
+2. 在 **Scopes** 中勾选 `bot`。
+3. 在下方出现的 **Bot Permissions** 中至少勾选：
+   - `Send Messages` — 发送消息
+   - `Read Message History` — 读取消息历史
+   - `View Channels` — 查看频道
+4. 页面底部会生成一个邀请链接（形如 `https://discord.com/oauth2/authorize?client_id=...`）。
+5. 复制该链接，在浏览器中打开，选择你的服务器，点击 **Authorize**。
+
+#### 6.4 配置 Ultrabot
+
+将 Token 和可选的访问控制参数写入 `~/.ultrabot/config.json`（**不要**硬编码在代码中）：
+
+```json
+{
+  "channels": {
+    "discord": {
+      "enabled": true,
+      "token": "${DISCORD_BOT_TOKEN}",
+      "allowFrom": [123456789012345678],
+      "allowedGuilds": [987654321098765432]
+    }
+  }
+}
+```
+
+配置说明：
+- `enabled` — 设为 `true` 启用通道
+- `token` — 使用 `${ENV_VAR}` 语法引用环境变量，网关启动时自动展开
+- `allowFrom` — 可选的用户 ID 白名单（整数数组），空数组或省略表示允许所有用户
+- `allowedGuilds` — 可选的服务器 ID 白名单（整数数组），空数组或省略表示允许所有服务器
+
+> **获取 ID 的方法：** 在 Discord 设置 → 高级 → 开启 **开发者模式**，然后右键用户名 → **复制用户 ID**，右键服务器图标 → **复制服务器 ID**。
+
+推荐使用环境变量传入 Token：
+
+```bash
+export DISCORD_BOT_TOKEN="你的机器人Token"
+```
+
+#### 6.5 运行与验证
+
+```bash
+# 安装 discord.py（如果尚未安装）
+pip install discord.py
+
+# 启动网关
+python -m ultrabot.gateway
+```
+
+机器人上线后，终端会输出类似日志：
+
+```
+INFO | Discord bot connected as Ultrabot#1234
+```
+
+在 Discord 服务器的任意频道发送一条消息，机器人应该会通过消息总线处理并回复。
+
+> **排查提示：**
+> - 机器人在线但不回复？检查是否开启了 **Message Content Intent**。
+> - 出现 `Forbidden` 错误？确认机器人在目标频道有 `Send Messages` 和 `View Channels` 权限。
+> - 提示 `Invalid Token`？确认环境变量已正确设置，Token 没有多余空格。
+
+### 步骤 7：Slack 机器人创建与连接
+
+#### 7.1 创建 Slack App
+
+1. 打开 [Slack API: Your Apps](https://api.slack.com/apps)，点击 **Create New App** → **From scratch**。
+2. 输入 App 名称（例如 `Ultrabot`），选择目标 Workspace，点击 **Create App**。
+
+#### 7.2 配置 Bot Token 和权限
+
+1. 在左侧菜单进入 **OAuth & Permissions**。
+2. 在 **Bot Token Scopes** 下添加以下权限：
+   - `chat:write` — 发送消息
+   - `channels:history` — 读取公共频道消息
+   - `groups:history` — 读取私有频道消息
+   - `im:history` — 读取私聊消息
+3. 点击页面顶部的 **Install to Workspace** → **Allow**。
+4. 安装后会获得 **Bot User OAuth Token**（以 `xoxb-` 开头）。
+
+#### 7.3 启用 Socket Mode
+
+Socket Mode 让机器人通过 WebSocket 连接接收事件，不需要公网 URL。
+
+1. 在左侧菜单进入 **Socket Mode**，开启 **Enable Socket Mode**。
+2. 会提示创建 **App-Level Token**，输入名称（如 `ultrabot-socket`），添加 `connections:write` scope，点击 **Generate**。
+3. 获得 App Token（以 `xapp-` 开头）。
+   > **重要：** Token 只显示一次，请立即复制保存。
+
+#### 7.4 订阅事件
+
+1. 在左侧菜单进入 **Event Subscriptions**，开启 **Enable Events**。
+2. 在 **Subscribe to bot events** 下添加：
+   - `message.channels` — 公共频道消息
+   - `message.groups` — 私有频道消息
+   - `message.im` — 私聊消息
+3. 点击 **Save Changes**。
+
+#### 7.5 配置 Ultrabot
+
+在 `~/.ultrabot/config.json` 的 `channels` 中添加 Slack 配置：
+
+```json
+{
+  "channels": {
+    "slack": {
+      "enabled": true,
+      "botToken": "${SLACK_BOT_TOKEN}",
+      "appToken": "${SLACK_APP_TOKEN}",
+      "allowFrom": []
+    }
+  }
+}
+```
+
+配置说明：
+- `botToken` — Bot User OAuth Token（`xoxb-` 开头）
+- `appToken` — App-Level Token（`xapp-` 开头），用于 Socket Mode 连接
+- `allowFrom` — 可选的用户 ID 白名单（字符串数组），空数组表示允许所有用户
+
+```bash
+export SLACK_BOT_TOKEN="xoxb-你的Bot Token"
+export SLACK_APP_TOKEN="xapp-你的App Token"
+```
+
+#### 7.6 运行与验证
+
+```bash
+# 安装 slack-sdk（如果尚未安装）
+pip install "slack-sdk>=3.39"
+
+# 启动网关
+python -m ultrabot.gateway
+```
+
+终端输出：
+
+```
+INFO | Slack channel started (Socket Mode)
+INFO | Gateway started — dispatching messages
+```
+
+在 Slack 中向机器人发送私聊或在频道中 @mention 它。
+
+> **排查提示：**
+> - 提示 `invalid_auth`？确认 Bot Token 和 App Token 都已正确设置。
+> - 机器人不响应频道消息？确认已添加 `message.channels` 事件订阅，并已将机器人邀请到该频道。
+> - Slack 重复推送事件？这是因为 `ack()` 没有在 3 秒内调用 — 检查网络延迟。
+
 ### 测试
 
 ```python

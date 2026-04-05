@@ -433,17 +433,211 @@ python -m pytest tests/test_chinese_channels.py -v
 实用函数正常工作 — 即使没有安装平台特定的 SDK
 （微信仅使用核心依赖中的 `httpx`）。
 
-要进行通道实际测试，将凭据添加到 `ultrabot.yaml`：
+要进行通道实际测试，将凭据添加到 `~/.ultrabot/config.json`：
 
-```yaml
-channels:
-  feishu:
-    enabled: true
-    appId: "cli_xxxxx"
-    appSecret: "xxxxx"
+```json
+{
+  "channels": {
+    "feishu": {
+      "enabled": true,
+      "appId": "${FEISHU_APP_ID}",
+      "appSecret": "${FEISHU_APP_SECRET}",
+      "encryptKey": ""
+    }
+  }
+}
 ```
 
-然后运行 `python -m ultrabot gateway` 并在飞书上发送消息。
+然后运行 `python -m ultrabot.gateway` 并在飞书上发送消息。
+
+### 步骤 5：各平台机器人创建与连接
+
+#### 5.1 企业微信（WeCom）
+
+**创建机器人：**
+
+1. 登录 [企业微信管理后台](https://work.weixin.qq.com/)。
+2. 进入 **应用管理** → **创建应用**，选择 **机器人** 类型。
+3. 获取 **Bot ID** 和 **Secret**。
+
+**配置：**
+
+```json
+{
+  "channels": {
+    "wecom": {
+      "enabled": true,
+      "botId": "${WECOM_BOT_ID}",
+      "secret": "${WECOM_SECRET}",
+      "welcomeMessage": "你好，我是 Ultrabot！",
+      "allowFrom": []
+    }
+  }
+}
+```
+
+```bash
+export WECOM_BOT_ID="你的BotID"
+export WECOM_SECRET="你的Secret"
+pip install wecom-aibot-sdk
+```
+
+> **排查提示：** 企业微信使用 WebSocket 长连接，不需要公网 IP。如果连接断开，SDK 会自动重连。
+
+#### 5.2 微信个人号（Weixin）
+
+**登录方式：** 微信个人号通过二维码扫码登录，不需要在开发者平台创建应用。
+
+**配置：**
+
+```json
+{
+  "channels": {
+    "weixin": {
+      "enabled": true,
+      "baseUrl": "https://ilinkai.weixin.qq.com",
+      "token": "",
+      "allowFrom": []
+    }
+  }
+}
+```
+
+首次启动时，终端会显示二维码，用手机微信扫码登录。登录状态会保存在 `~/.ultrabot/weixin/` 目录。
+
+```bash
+pip install httpx pycryptodome
+```
+
+> **排查提示：**
+> - 二维码不显示？确认终端支持 Unicode 字符。
+> - 频繁掉线？微信对自动化登录有限制，建议使用专用微信号。
+> - 媒体文件解密失败？确认 `pycryptodome` 或 `cryptography` 已安装。
+
+#### 5.3 飞书（Feishu / Lark）
+
+**创建机器人：**
+
+1. 打开 [飞书开放平台](https://open.feishu.cn/)，点击 **创建企业自建应用**。
+2. 输入应用名称和描述，点击 **确定创建**。
+3. 在 **凭证与基础信息** 页面获取 **App ID** 和 **App Secret**。
+4. 进入 **事件与回调** → **事件配置** → 选择 **使用长连接接收事件**。
+5. 在 **事件订阅** 中添加 `im.message.receive_v1`（接收消息事件）。
+6. 进入 **权限管理**，添加以下权限并申请开通：
+   - `im:message` — 获取与发送消息
+   - `im:message:send_as_bot` — 以机器人身份发送消息
+   - `im:chat` — 获取群信息
+7. 在 **版本管理与发布** 中创建版本并发布。
+
+**配置：**
+
+```json
+{
+  "channels": {
+    "feishu": {
+      "enabled": true,
+      "appId": "${FEISHU_APP_ID}",
+      "appSecret": "${FEISHU_APP_SECRET}",
+      "encryptKey": "",
+      "reactEmoji": "THUMBSUP",
+      "groupPolicy": "mention"
+    }
+  }
+}
+```
+
+配置说明：
+- `encryptKey` — 事件加密密钥（可为空，在开放平台的事件配置中设置）
+- `reactEmoji` — 收到消息时自动添加的表情回应
+- `groupPolicy` — 群聊策略：`"mention"` 只响应 @机器人 的消息，`"all"` 响应所有消息
+
+```bash
+export FEISHU_APP_ID="cli_xxxx"
+export FEISHU_APP_SECRET="xxxx"
+pip install lark-oapi
+```
+
+> **排查提示：**
+> - 飞书 SDK 在专用线程中运行，与主 asyncio 循环不冲突。
+> - 机器人不回复群消息？确认 `groupPolicy` 设置正确，且在群中 @了机器人。
+> - 提示权限不足？检查是否已在开放平台申请并开通了所需权限。
+
+#### 5.4 QQ Bot
+
+**创建机器人：**
+
+1. 打开 [QQ 开放平台](https://q.qq.com/)，注册开发者账号。
+2. 点击 **创建机器人**，填写信息后提交审核。
+3. 审核通过后，在 **开发设置** 中获取 **App ID** 和 **Secret**。
+4. 在 **功能配置** 中开启需要的消息类型（C2C 私聊、群聊等）。
+
+**配置：**
+
+```json
+{
+  "channels": {
+    "qq": {
+      "enabled": true,
+      "appId": "${QQ_APP_ID}",
+      "secret": "${QQ_SECRET}",
+      "msgFormat": "plain",
+      "allowFrom": []
+    }
+  }
+}
+```
+
+配置说明：
+- `msgFormat` — 消息格式：`"plain"` 纯文本，`"markdown"` Markdown 格式
+- `allowFrom` — 可选的用户 ID 白名单
+
+```bash
+export QQ_APP_ID="你的AppID"
+export QQ_SECRET="你的Secret"
+pip install qq-botpy
+```
+
+> **排查提示：**
+> - QQ 机器人需要通过审核才能使用，沙箱环境可先在测试频道中调试。
+> - 群消息需要 @机器人 才会触发。
+> - 提示 `invalid appid`？确认 App ID 和 Secret 正确，且机器人已上线。
+
+### 完整多通道配置示例
+
+以下展示同时启用多个中国平台通道的 `~/.ultrabot/config.json`：
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "token": "${TELEGRAM_BOT_TOKEN}"
+    },
+    "discord": {
+      "enabled": true,
+      "token": "${DISCORD_BOT_TOKEN}"
+    },
+    "feishu": {
+      "enabled": true,
+      "appId": "${FEISHU_APP_ID}",
+      "appSecret": "${FEISHU_APP_SECRET}"
+    },
+    "wecom": {
+      "enabled": false,
+      "botId": "${WECOM_BOT_ID}",
+      "secret": "${WECOM_SECRET}"
+    },
+    "qq": {
+      "enabled": false,
+      "appId": "${QQ_APP_ID}",
+      "secret": "${QQ_SECRET}"
+    }
+  }
+}
+```
+
+智能体和消息总线完全不感知底层平台 — 用户在任何通道发送的消息
+都经过相同的处理管道。
 
 ### 本课成果
 

@@ -275,6 +275,72 @@ class TelegramChannel(BaseChannel):
         )
 ```
 
+### 步骤 6：Telegram 机器人创建与连接
+
+在运行 `TelegramChannel` 之前，你需要在 Telegram 上创建一个机器人并获取 Token。
+
+#### 6.1 通过 BotFather 创建机器人
+
+1. 在 Telegram 中搜索 **@BotFather** 并打开对话。
+2. 发送 `/newbot`，按提示输入：
+   - **机器人名称**（显示名）：例如 `Ultrabot`
+   - **用户名**（必须以 `bot` 结尾）：例如 `my_ultrabot_bot`
+3. BotFather 会返回一个 **HTTP API Token**，形如 `123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`。
+   > **重要：** 妥善保存 Token，**绝对不要**提交到 Git 仓库。
+
+#### 6.2 配置 Ultrabot
+
+将 Token 写入 `~/.ultrabot/config.json`（Ultrabot 的统一配置文件，JSON 格式）：
+
+```json
+{
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "token": "${TELEGRAM_BOT_TOKEN}",
+      "allowFrom": []
+    }
+  }
+}
+```
+
+配置说明：
+- `enabled` — 设为 `true` 启用通道
+- `token` — 使用 `${ENV_VAR}` 语法引用环境变量，网关启动时自动展开
+- `allowFrom` — 可选的用户 ID 白名单（整数数组），空数组表示允许所有用户
+
+推荐使用环境变量传入 Token：
+
+```bash
+export TELEGRAM_BOT_TOKEN="你从BotFather获得的Token"
+```
+
+> **获取用户 ID：** 在 Telegram 中搜索 **@userinfobot**，发送任意消息即可获得你的数字 ID。
+
+#### 6.3 运行与验证
+
+```bash
+# 安装 python-telegram-bot（如果尚未安装）
+pip install "python-telegram-bot[socks]>=22.0"
+
+# 启动网关
+python -m ultrabot.gateway
+```
+
+机器人上线后，终端会输出类似日志：
+
+```
+INFO | Telegram channel started (polling)
+INFO | Gateway started — dispatching messages
+```
+
+在 Telegram 中找到你的机器人，发送一条消息，机器人应该会通过消息总线处理并回复。
+
+> **排查提示：**
+> - 提示 `Invalid Token`？确认环境变量已正确设置，Token 没有多余空格。
+> - 机器人不回复？检查 `enabled` 是否为 `true`，以及 `allowFrom` 是否限制了你的用户 ID。
+> - 提示 `ImportError`？确认已安装 `python-telegram-bot`。
+
 ### 测试
 
 ```python
