@@ -306,7 +306,7 @@ class TelegramChannel(BaseChannel):
 
 配置说明：
 - `enabled` — 设为 `true` 启用通道
-- `token` — 使用 `${ENV_VAR}` 语法引用环境变量，网关启动时自动展开
+- `token` — 使用 `${ENV_VAR}` 语法引用环境变量，启动时自动展开
 - `allowFrom` — 可选的用户 ID 白名单（整数数组），空数组表示允许所有用户
 
 推荐使用环境变量传入 Token：
@@ -322,23 +322,74 @@ export TELEGRAM_BOT_TOKEN="你从BotFather获得的Token"
 ```bash
 # 安装 python-telegram-bot（如果尚未安装）
 pip install "python-telegram-bot[socks]>=22.0"
+```
 
-# 启动网关
-python -m ultrabot.gateway
+目前我们还没有构建网关（Gateway）来编排所有组件（网关将在 **课程 15** 中正式介绍）。
+不过我们可以写一个简单的独立脚本来验证 `TelegramChannel` 是否正常工作。
+
+创建 `demo_telegram.py`（仅用于本地验证，不需要提交）：
+
+```python
+"""独立演示脚本：验证 TelegramChannel 能收发消息。"""
+
+import asyncio
+import os
+
+from ultrabot.bus.events import InboundMessage
+from ultrabot.bus.queue import MessageBus
+from ultrabot.channels.telegram import TelegramChannel
+
+
+async def main():
+    bus = MessageBus()
+
+    # 收到消息时打印到终端
+    async def on_inbound(msg: InboundMessage):
+        print(f"收到消息 [{msg.sender_id}]: {msg.content}")
+
+    bus.set_inbound_handler(on_inbound)
+
+    token = os.environ["TELEGRAM_BOT_TOKEN"]
+    channel = TelegramChannel({"token": token}, bus)
+
+    await channel.start()
+    print("Telegram 通道已启动，在 Telegram 上给你的机器人发消息试试！")
+    print("按 Ctrl+C 退出")
+
+    try:
+        await bus.dispatch_inbound()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        await channel.stop()
+
+
+asyncio.run(main())
+```
+
+运行脚本：
+
+```bash
+export TELEGRAM_BOT_TOKEN="你从BotFather获得的Token"
+python demo_telegram.py
 ```
 
 机器人上线后，终端会输出类似日志：
 
 ```
 INFO | Telegram channel started (polling)
-INFO | Gateway started — dispatching messages
+Telegram 通道已启动，在 Telegram 上给你的机器人发消息试试！
 ```
 
-在 Telegram 中找到你的机器人，发送一条消息，机器人应该会通过消息总线处理并回复。
+在 Telegram 中找到你的机器人，发送一条消息，终端应打印出收到的消息内容。
+
+> **提示：** 目前脚本只能接收并打印消息，还不能通过智能体自动回复。
+> 在课程 15 中我们会构建 **Gateway**（网关），将通道、智能体和消息总线串联起来，
+> 届时机器人将能够自动处理并回复消息。
 
 > **排查提示：**
 > - 提示 `Invalid Token`？确认环境变量已正确设置，Token 没有多余空格。
-> - 机器人不回复？检查 `enabled` 是否为 `true`，以及 `allowFrom` 是否限制了你的用户 ID。
+> - 机器人无反应？检查 `allowFrom` 是否限制了你的用户 ID。
 > - 提示 `ImportError`？确认已安装 `python-telegram-bot`。
 
 ### 测试
@@ -411,8 +462,8 @@ def test_message_chunking_logic():
 python -m pytest tests/test_channels_base.py -v
 ```
 
-预期结果：全部 3 个测试通过。要进行 Telegram 实际测试，将你的机器人令牌添加到
-配置中并运行网关 — 机器人应该会回复消息。
+预期结果：全部 3 个测试通过。要进行 Telegram 实际测试，将你的机器人令牌设置到
+环境变量中并运行演示脚本 — 终端应该能打印出收到的消息。
 
 ### 本课成果
 
