@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import signal
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -33,35 +32,47 @@ class Gateway:
         """初始化所有组件并进入主事件循环。"""
         logger.info("Gateway starting up")
 
+        from openai import OpenAI
         from ultrabot.bus.queue import MessageBus
+        from ultrabot.config.paths import get_data_dir
         from ultrabot.providers.manager import ProviderManager
         from ultrabot.session.manager import SessionManager
         from ultrabot.tools.base import ToolRegistry
-        from ultrabot.agent.agent import Agent
+        from ultrabot.tools.builtin import register_builtin_tools
+        from ultrabot.agent import Agent
         from ultrabot.channels.base import ChannelManager
 
-        workspace = Path(
-            self._config.agents.defaults.workspace
-        ).expanduser().resolve()
-        workspace.mkdir(parents=True, exist_ok=True)
+        defaults = self._config.agents.defaults
+        data_dir = get_data_dir()
 
         self._bus = MessageBus()
         self._provider_mgr = ProviderManager(self._config)
-        self._session_mgr = SessionManager(workspace)
+        self._session_mgr = SessionManager(data_dir)
         self._tool_registry = ToolRegistry()
+        register_builtin_tools(self._tool_registry)
+
+        # 从配置构建 OpenAI 客户端
+        provider_name = self._config.get_provider(defaults.model)
+        api_key = self._config.get_api_key(provider_name)
+        prov_cfg = getattr(self._config.providers, provider_name, None)
+        api_base = prov_cfg.api_base if prov_cfg else None
+
+        client = OpenAI(api_key=api_key, base_url=api_base)
+
         self._agent = Agent(
-            config=self._config.agents.defaults,
-            provider_manager=self._provider_mgr,
-            session_manager=self._session_mgr,
+            client=client,
+            model=defaults.model,
             tool_registry=self._tool_registry,
+            sessions=self._session_mgr,
+            context_window=defaults.context_window_tokens,
+            max_iterations=defaults.max_tool_iterations,
         )
 
         self._bus.set_inbound_handler(self._handle_inbound)
 
-        channels_cfg = self._config.channels
-        extra_dict: dict = channels_cfg.model_extra or {}
-        self._channel_mgr = ChannelManager(extra_dict, self._bus)
-        self._register_channels(extra_dict)
+        channels_cfg: dict = self._config.channels or {}
+        self._channel_mgr = ChannelManager(channels_cfg, self._bus)
+        self._register_channels(channels_cfg)
         await self._channel_mgr.start_all()
 
         loop = asyncio.get_running_loop()

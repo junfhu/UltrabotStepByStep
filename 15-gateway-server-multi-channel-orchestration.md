@@ -23,7 +23,11 @@
 
 **新建文件：**
 - `ultrabot/gateway/__init__.py` — 公共重导出
+- `ultrabot/gateway/__main__.py` — 允许 `python -m ultrabot.gateway` 直接启动网关
 - `ultrabot/gateway/server.py` — `Gateway` 类
+
+**修改文件：**
+- `ultrabot/config/loader.py` — 新增 `_expand_env_vars()`，递归展开配置中的 `${ENV_VAR}` 引用
 
 ### 步骤 1：Gateway 骨架
 
@@ -36,7 +40,6 @@ from __future__ import annotations
 
 import asyncio
 import signal
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -69,39 +72,50 @@ class Gateway:
         logger.info("Gateway starting up")
 
         # 延迟导入以避免循环依赖。
+        from openai import OpenAI
         from ultrabot.bus.queue import MessageBus
+        from ultrabot.config.paths import get_data_dir
         from ultrabot.providers.manager import ProviderManager
         from ultrabot.session.manager import SessionManager
         from ultrabot.tools.base import ToolRegistry
-        from ultrabot.agent.agent import Agent
+        from ultrabot.tools.builtin import register_builtin_tools
+        from ultrabot.agent import Agent
         from ultrabot.channels.base import ChannelManager
 
-        # 从配置派生工作空间路径。
-        workspace = Path(
-            self._config.agents.defaults.workspace
-        ).expanduser().resolve()
-        workspace.mkdir(parents=True, exist_ok=True)
+        defaults = self._config.agents.defaults
+        data_dir = get_data_dir()
 
         # 核心组件。
         self._bus = MessageBus()
         self._provider_mgr = ProviderManager(self._config)
-        self._session_mgr = SessionManager(workspace)
+        self._session_mgr = SessionManager(data_dir)
         self._tool_registry = ToolRegistry()
+        register_builtin_tools(self._tool_registry)
+
+        # 从配置构建 OpenAI 客户端。
+        provider_name = self._config.get_provider(defaults.model)
+        api_key = self._config.get_api_key(provider_name)
+        prov_cfg = getattr(self._config.providers, provider_name, None)
+        api_base = prov_cfg.api_base if prov_cfg else None
+
+        client = OpenAI(api_key=api_key, base_url=api_base)
+
         self._agent = Agent(
-            config=self._config.agents.defaults,
-            provider_manager=self._provider_mgr,
-            session_manager=self._session_mgr,
+            client=client,
+            model=defaults.model,
             tool_registry=self._tool_registry,
+            sessions=self._session_mgr,
+            context_window=defaults.context_window_tokens,
+            max_iterations=defaults.max_tool_iterations,
         )
 
         # 在消息总线上注册入站处理器。
         self._bus.set_inbound_handler(self._handle_inbound)
 
         # 通道 — 配置驱动的注册。
-        channels_cfg = self._config.channels
-        extra_dict: dict = channels_cfg.model_extra or {}
-        self._channel_mgr = ChannelManager(extra_dict, self._bus)
-        self._register_channels(extra_dict)
+        channels_cfg: dict = self._config.channels or {}
+        self._channel_mgr = ChannelManager(channels_cfg, self._bus)
+        self._register_channels(channels_cfg)
         await self._channel_mgr.start_all()
 
         # 用于优雅关闭的信号处理器。
@@ -259,6 +273,37 @@ from ultrabot.gateway.server import Gateway
 
 __all__ = ["Gateway"]
 ```
+
+### 模块入口
+
+创建 `ultrabot/gateway/__main__.py`，使 `python -m ultrabot.gateway` 可直接启动网关：
+
+```python
+# ultrabot/gateway/__main__.py
+"""允许通过以下方式运行：python -m ultrabot.gateway"""
+
+import asyncio
+import sys
+from pathlib import Path
+
+from ultrabot.config import load_config, get_config_path
+from ultrabot.gateway.server import Gateway
+
+
+def main() -> None:
+    config_path = Path(sys.argv[1]) if len(sys.argv) > 1 else get_config_path()
+    if not config_path.exists():
+        print(f"Config not found at {config_path}. Run 'ultrabot onboard' first.")
+        sys.exit(1)
+    cfg = load_config(config_path)
+    gw = Gateway(cfg)
+    asyncio.run(gw.start())
+
+
+main()
+```
+
+> **`__main__.py` 的作用：** Python 在执行 `python -m some.package` 时，会查找该包目录下的 `__main__.py` 文件并执行它。如果缺少此文件，会报错 `No module named some.package.__main__`。
 
 ### 步骤 6：配置与运行网关
 
@@ -702,3 +747,31 @@ __all__ = ["Gateway"]
 ```
 
 **为什么在本课中使用：** `ultrabot/gateway/__init__.py` 用 `__all__` 明确声明网关包只导出 `Gateway` 类。外部代码只需 `from ultrabot.gateway import Gateway`，不需要知道内部模块结构。
+
+### `__main__.py`（包的可执行入口）
+
+当使用 `python -m package_name` 运行一个包时，Python 会查找并执行该包目录下的 `__main__.py` 文件。这是将包变成可执行程序的标准方式。
+
+```python
+# ultrabot/gateway/__main__.py
+"""允许通过以下方式运行：python -m ultrabot.gateway"""
+
+import asyncio
+import sys
+from pathlib import Path
+
+from ultrabot.config import load_config, get_config_path
+from ultrabot.gateway.server import Gateway
+
+
+def main() -> None:
+    config_path = Path(sys.argv[1]) if len(sys.argv) > 1 else get_config_path()
+    cfg = load_config(config_path)
+    gw = Gateway(cfg)
+    asyncio.run(gw.start())
+
+
+main()
+```
+
+**为什么在本课中使用：** 网关是一个独立的服务器进程，需要能直接通过 `python -m ultrabot.gateway` 启动。没有 `__main__.py`，Python 会报错 `No module named ultrabot.gateway.__main__`。这个文件作为网关的入口点，加载配置并启动 `Gateway`。
