@@ -8,10 +8,27 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from pathlib import Path
 from typing import Any
 
 from ultrabot.config.schema import Config
+
+
+def _expand_env_vars(obj: Any) -> Any:
+    """递归地将字符串值中的 ``${VAR}`` 替换为对应的环境变量。"""
+    if isinstance(obj, str):
+        return re.sub(
+            r"\$\{([^}]+)\}",
+            lambda m: os.environ.get(m.group(1), m.group(0)),
+            obj,
+        )
+    if isinstance(obj, dict):
+        return {k: _expand_env_vars(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_expand_env_vars(item) for item in obj]
+    return obj
 
 
 def get_config_path() -> Path:
@@ -19,8 +36,6 @@ def get_config_path() -> Path:
 
     取自 ultrabot/config/loader.py 第 39-56 行。
     """
-    import os
-
     env = os.environ.get("ULTRABOT_CONFIG")
     if env:
         return Path(env).expanduser().resolve()
@@ -48,6 +63,9 @@ def load_config(path: str | Path | None = None) -> Config:
             file_data = {}
     else:
         resolved.parent.mkdir(parents=True, exist_ok=True)
+
+    # 展开 ${ENV_VAR} 引用
+    file_data = _expand_env_vars(file_data)
 
     # file_data 作为 init kwargs 传入；
     # settings_customise_sources 保证 env vars 优先于 init kwargs
