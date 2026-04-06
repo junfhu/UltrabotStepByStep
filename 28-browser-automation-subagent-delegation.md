@@ -24,6 +24,11 @@
 - `ultrabot/tools/browser.py` — 6 个浏览器工具 + `_BrowserManager` 单例
 - `ultrabot/agent/delegate.py` — `DelegateTaskTool`、`DelegationRequest`、`DelegationResult`
 
+**沿用文件（从早期课程复制）：**
+- `ultrabot/agent/agent.py` — `Agent` 核心类（config, provider_manager, session_manager, tool_registry 构造函数，async run() 方法）
+- `ultrabot/tools/base.py` — `Tool` 抽象基类 + `ToolRegistry`（课程 3-4）
+- `ultrabot/tools/toolsets.py` — `Toolset` 数据类 + `ToolsetManager`（课程 4）
+
 ### 步骤 1：浏览器管理器（延迟单例）
 
 所有浏览器工具共享由模块级单例管理的单个页面实例。Playwright 采用延迟导入，因此即使未安装也能正常导入该模块。
@@ -548,6 +553,12 @@ class TestBrowserToolsWithoutPlaywright:
         tool = BrowserCloseTool()
         assert tool.name == "browser_close"
 ```
+
+> **pytest 配置**：本课的异步测试使用 `@pytest.mark.asyncio`，需要在 `pyproject.toml` 中添加：
+> ```toml
+> [tool.pytest.ini_options]
+> asyncio_mode = "auto"
+> ```
 
 ### 检查点
 

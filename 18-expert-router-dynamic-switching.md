@@ -22,8 +22,13 @@
 - 从 GitHub 同步下载人设文件
 
 **新建文件：**
-- `ultrabot/experts/router.py` — 消息到专家的路由引擎
-- `ultrabot/experts/sync.py` — 从 GitHub 下载人设
+- `ultrabot/experts/router.py` — 专家路由器，命令解析与粘性会话
+- `ultrabot/experts/sync.py` — 从 GitHub 同步人设文件
+
+**沿用文件（从第 17 课复制）：**
+- `ultrabot/experts/parser.py` — `ExpertPersona` 数据类与 markdown 解析
+- `ultrabot/experts/registry.py` — `ExpertRegistry` 内存注册表
+- `ultrabot/experts/__init__.py` — 导出所有公共 API
 
 ### 步骤 1：RouteResult Dataclass
 
@@ -208,9 +213,18 @@ class ExpertRouter:
                 lines.append(f"- `@{p.slug}` -- {p.name}: {p.description[:60]}")
             return "\n".join(lines)
 
+        all_experts = self._registry.list_all()
+        if not all_experts:
+            return "No experts loaded. Run `ultrabot experts sync` to download."
+
         departments = self._registry.departments()
         if not departments:
-            return "No experts loaded. Run `ultrabot experts sync` to download."
+            # 专家没有部门分类时，直接列出所有专家
+            lines = [f"**{len(all_experts)} experts loaded:**\n"]
+            for p in all_experts:
+                lines.append(f"- `@{p.slug}` -- {p.name}: {p.description[:60]}")
+            lines.append("\nUse `@slug` to activate an expert, `/experts query` to search.")
+            return "\n".join(lines)
 
         lines = [f"**{len(self._registry)} experts across {len(departments)} departments:**\n"]
         for dept in departments:
@@ -485,6 +499,12 @@ class TestListCommand:
         result = await router.route("/experts Python", session_key="s1")
         assert "coder" in result.cleaned_message.lower()
 ```
+
+> **pytest 配置**：本课的异步测试使用 `@pytest.mark.asyncio`，需要在 `pyproject.toml` 中添加：
+> ```toml
+> [tool.pytest.ini_options]
+> asyncio_mode = "auto"
+> ```
 
 ### 检查点
 

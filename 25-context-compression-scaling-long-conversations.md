@@ -284,6 +284,12 @@ class ContextCompressor:
 
 ### 测试
 
+> **pytest 配置**：本课的异步测试使用 `@pytest.mark.asyncio`，需要在 `pyproject.toml` 中添加：
+> ```toml
+> [tool.pytest.ini_options]
+> asyncio_mode = "auto"
+> ```
+
 ```python
 # tests/test_context_compressor.py
 """上下文压缩系统的测试。"""

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -14,15 +13,10 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pydantic import BaseModel
 
-from ultrabot.agent.agent import Agent
-from ultrabot.config.loader import load_config, save_config
-from ultrabot.config.schema import Config
-from ultrabot.providers.manager import ProviderManager
-from ultrabot.security.guard import SecurityConfig as GuardSecurityConfig
-from ultrabot.security.guard import SecurityGuard
-from ultrabot.session.manager import SessionManager
-from ultrabot.tools.base import ToolRegistry
-from ultrabot.tools.builtin import register_builtin_tools
+if TYPE_CHECKING:
+    from ultrabot.agent.agent import Agent
+    from ultrabot.config.schema import Config
+    from ultrabot.tools.base import ToolRegistry
 
 _MODULE_DIR = Path(__file__).resolve().parent
 _STATIC_DIR = _MODULE_DIR / "static"
@@ -119,6 +113,15 @@ def _redact_api_keys(obj: Any) -> Any:
 
 def _init_components(config: Config) -> tuple:
     """从配置实例化所有 ultrabot 子系统。"""
+    from ultrabot.agent.agent import Agent
+    from ultrabot.config.schema import Config as _Config
+    from ultrabot.providers.manager import ProviderManager
+    from ultrabot.security.guard import SecurityConfig as GuardSecurityConfig
+    from ultrabot.security.guard import SecurityGuard
+    from ultrabot.session.manager import SessionManager
+    from ultrabot.tools.base import ToolRegistry
+    from ultrabot.tools.builtin import register_builtin_tools
+
     pm = ProviderManager(_ProviderManagerConfig(config))
     provider_manager = _StreamableProviderManager(pm)
 
@@ -170,6 +173,8 @@ def create_app(config_path: str | Path | None = None) -> FastAPI:
 
     @app.on_event("startup")
     async def _startup() -> None:
+        from ultrabot.config.loader import load_config
+
         global _config, _config_path
         global _provider_manager, _session_manager
         global _tool_registry, _security_guard, _agent
@@ -337,6 +342,8 @@ def create_app(config_path: str | Path | None = None) -> FastAPI:
 def run_server(host: str = "0.0.0.0", port: int = 8080,
                config_path: str | Path | None = None) -> None:
     """创建应用并在 uvicorn 下启动。"""
+    import uvicorn
+
     app = create_app(config_path=config_path)
     logger.info("Starting ultrabot web UI on {}:{}", host, port)
     uvicorn.run(app, host=host, port=port)

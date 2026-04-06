@@ -73,6 +73,8 @@ if __name__ == "__main__":
 # ultrabot/cli/commands.py  （结构概览 — 在课程 8、17、19 中构建）
 """ultrabot 助手框架的 CLI 命令。"""
 
+from typing import Annotated, Optional
+
 import typer
 from ultrabot import __version__
 
@@ -94,6 +96,13 @@ app = typer.Typer(
 #   experts info <slug>       — 显示专家详情
 #   experts search <query>    — 按关键字搜索
 #   experts sync              — 从 GitHub 下载
+
+
+def version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"ultrabot {__version__}")
+        raise typer.Exit()
+
 
 @app.callback()
 def main(

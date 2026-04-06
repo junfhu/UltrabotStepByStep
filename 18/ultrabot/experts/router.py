@@ -153,9 +153,18 @@ class ExpertRouter:
                 lines.append(f"- `@{p.slug}` -- {p.name}: {p.description[:60]}")
             return "\n".join(lines)
 
+        all_experts = self._registry.list_all()
+        if not all_experts:
+            return "No experts loaded. Run `ultrabot experts sync` to download."
+
         departments = self._registry.departments()
         if not departments:
-            return "No experts loaded. Run `ultrabot experts sync` to download."
+            # 专家没有部门分类时，直接列出所有专家
+            lines = [f"**{len(all_experts)} experts loaded:**\n"]
+            for p in all_experts:
+                lines.append(f"- `@{p.slug}` -- {p.name}: {p.description[:60]}")
+            lines.append("\nUse `@slug` to activate an expert, `/experts query` to search.")
+            return "\n".join(lines)
 
         lines = [f"**{len(self._registry)} experts across {len(departments)} departments:**\n"]
         for dept in departments:
