@@ -343,7 +343,7 @@ Discord 要求机器人显式声明需要的特权 Intents：
 
 配置说明：
 - `enabled` — 设为 `true` 启用通道
-- `token` — 使用 `${ENV_VAR}` 语法引用环境变量，网关启动时自动展开
+- `token` — 使用 `${ENV_VAR}` 语法引用环境变量，启动时自动展开
 - `allowFrom` — 可选的用户 ID 白名单（整数数组），空数组或省略表示允许所有用户
 - `allowedGuilds` — 可选的服务器 ID 白名单（整数数组），空数组或省略表示允许所有服务器
 
@@ -360,9 +360,55 @@ export DISCORD_BOT_TOKEN="你的机器人Token"
 ```bash
 # 安装 discord.py（如果尚未安装）
 pip install discord.py
+```
 
-# 启动网关
-python -m ultrabot.gateway
+与课程 13 一样，网关（Gateway）将在 **课程 15** 中正式构建。
+目前我们用一个独立脚本来验证 `DiscordChannel` 能否正常连接和接收消息。
+
+创建 `demo_discord.py`（仅用于本地验证，不需要提交）：
+
+```python
+"""独立演示脚本：验证 DiscordChannel 能收发消息。"""
+
+import asyncio
+import os
+
+from ultrabot.bus.events import InboundMessage
+from ultrabot.bus.queue import MessageBus
+from ultrabot.channels.discord_channel import DiscordChannel
+
+
+async def main():
+    bus = MessageBus()
+
+    async def on_inbound(msg: InboundMessage):
+        print(f"收到消息 [{msg.sender_id}]: {msg.content}")
+
+    bus.set_inbound_handler(on_inbound)
+
+    token = os.environ["DISCORD_BOT_TOKEN"]
+    channel = DiscordChannel({"token": token}, bus)
+
+    await channel.start()
+    print("Discord 通道已启动，在服务器频道中发消息试试！")
+    print("按 Ctrl+C 退出")
+
+    try:
+        await bus.dispatch_inbound()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        await channel.stop()
+
+
+asyncio.run(main())
+```
+
+运行脚本：
+
+```bash
+export DISCORD_BOT_TOKEN="你的机器人Token"
+python demo_discord.py
 ```
 
 机器人上线后，终端会输出类似日志：
@@ -371,7 +417,10 @@ python -m ultrabot.gateway
 INFO | Discord bot connected as Ultrabot#1234
 ```
 
-在 Discord 服务器的任意频道发送一条消息，机器人应该会通过消息总线处理并回复。
+在 Discord 服务器的任意频道发送一条消息，终端应打印出收到的消息内容。
+
+> **提示：** 目前脚本只能接收并打印消息，还不能自动回复。
+> 在课程 15 中我们会构建 **Gateway**（网关），将通道、智能体和消息总线串联起来。
 
 > **排查提示：**
 > - 机器人在线但不回复？检查是否开启了 **Message Content Intent**。
@@ -446,19 +495,73 @@ export SLACK_APP_TOKEN="xapp-你的App Token"
 ```bash
 # 安装 slack-sdk（如果尚未安装）
 pip install "slack-sdk>=3.39"
+```
 
-# 启动网关
-python -m ultrabot.gateway
+同样，用一个独立脚本验证 `SlackChannel`：
+
+创建 `demo_slack.py`（仅用于本地验证，不需要提交）：
+
+```python
+"""独立演示脚本：验证 SlackChannel 能收发消息。"""
+
+import asyncio
+import os
+
+from ultrabot.bus.events import InboundMessage
+from ultrabot.bus.queue import MessageBus
+from ultrabot.channels.slack_channel import SlackChannel
+
+
+async def main():
+    bus = MessageBus()
+
+    async def on_inbound(msg: InboundMessage):
+        print(f"收到消息 [{msg.sender_id}]: {msg.content}")
+
+    bus.set_inbound_handler(on_inbound)
+
+    channel = SlackChannel(
+        {
+            "botToken": os.environ["SLACK_BOT_TOKEN"],
+            "appToken": os.environ["SLACK_APP_TOKEN"],
+        },
+        bus,
+    )
+
+    await channel.start()
+    print("Slack 通道已启动，在 Slack 上给机器人发消息试试！")
+    print("按 Ctrl+C 退出")
+
+    try:
+        await bus.dispatch_inbound()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        await channel.stop()
+
+
+asyncio.run(main())
+```
+
+运行脚本：
+
+```bash
+export SLACK_BOT_TOKEN="xoxb-你的Bot Token"
+export SLACK_APP_TOKEN="xapp-你的App Token"
+python demo_slack.py
 ```
 
 终端输出：
 
 ```
 INFO | Slack channel started (Socket Mode)
-INFO | Gateway started — dispatching messages
+Slack 通道已启动，在 Slack 上给机器人发消息试试！
 ```
 
-在 Slack 中向机器人发送私聊或在频道中 @mention 它。
+在 Slack 中向机器人发送私聊或在频道中 @mention 它，终端应打印出收到的消息。
+
+> **提示：** 与 Discord 演示脚本一样，目前只能接收并打印消息。
+> 课程 15 的 **Gateway** 会把通道、智能体和总线完整串联起来。
 
 > **排查提示：**
 > - 提示 `invalid_auth`？确认 Bot Token 和 App Token 都已正确设置。
@@ -502,8 +605,8 @@ def test_base_channel_is_abstract():
 python -m pytest tests/test_channels_platform.py -v
 ```
 
-预期结果：全部 3 个测试通过。要进行实际测试，将机器人令牌添加到配置中，
-启用通道，然后运行网关。
+预期结果：全部 3 个测试通过。要进行实际测试，将机器人令牌设置到环境变量中，
+然后运行对应的演示脚本（`demo_discord.py` 或 `demo_slack.py`）。
 
 ### 本课成果
 
