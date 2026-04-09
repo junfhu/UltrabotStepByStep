@@ -113,7 +113,17 @@ def _redact_api_keys(obj: Any) -> Any:
 
 def _init_components(config: Config) -> tuple:
     """从配置实例化所有 ultrabot 子系统。"""
-    from ultrabot.agent.agent import Agent
+    # Agent 在不同课程版本中位置不同：
+    #   CH19-24: ultrabot/agent.py（单文件）
+    #   CH25-27: ultrabot/agent/（包，无 agent.py）
+    #   CH28+:   ultrabot/agent/agent.py
+    try:
+        from ultrabot.agent.agent import Agent
+        _agent_style = "new"
+    except (ModuleNotFoundError, ImportError):
+        from ultrabot.agent import Agent
+        _agent_style = "old"
+
     from ultrabot.config.schema import Config as _Config
     from ultrabot.providers.manager import ProviderManager
     from ultrabot.security.guard import SecurityConfig as GuardSecurityConfig
@@ -122,7 +132,7 @@ def _init_components(config: Config) -> tuple:
     from ultrabot.tools.base import ToolRegistry
     from ultrabot.tools.builtin import register_builtin_tools
 
-    pm = ProviderManager(_ProviderManagerConfig(config))
+    pm = ProviderManager(config)
     provider_manager = _StreamableProviderManager(pm)
 
     session_manager = SessionManager(
@@ -133,24 +143,47 @@ def _init_components(config: Config) -> tuple:
     )
 
     tool_registry = ToolRegistry()
-    agent_config = _AgentConfig(config)
-    register_builtin_tools(tool_registry, config=agent_config)
+    register_builtin_tools(tool_registry)
 
-    guard_cfg = GuardSecurityConfig(
-        rpm=config.security.rate_limit_rpm,
-        burst=config.security.rate_limit_burst,
-        max_input_length=config.security.max_input_length,
-        blocked_patterns=list(config.security.blocked_patterns),
-    )
-    security_guard = SecurityGuard(config=guard_cfg)
+    # SecurityGuard 是可选的 — 部分课程版本的 Config 中没有 security 字段
+    security_guard = None
+    if hasattr(config, "security") and config.security is not None:
+        guard_cfg = GuardSecurityConfig(
+            rpm=config.security.rate_limit_rpm,
+            burst=config.security.rate_limit_burst,
+            max_input_length=config.security.max_input_length,
+            blocked_patterns=list(config.security.blocked_patterns),
+        )
+        security_guard = SecurityGuard(config=guard_cfg)
 
-    agent = Agent(
-        config=agent_config,
-        provider_manager=provider_manager,
-        session_manager=session_manager,
-        tool_registry=tool_registry,
-        security_guard=None,  # 通道层关注点，非代理层
-    )
+    defaults = config.agents.defaults
+
+    if _agent_style == "new":
+        # CH28+ Agent: 接受 config/provider_manager 参数
+        agent_config = _AgentConfig(config)
+        agent = Agent(
+            config=agent_config,
+            provider_manager=provider_manager,
+            session_manager=session_manager,
+            tool_registry=tool_registry,
+            security_guard=None,
+        )
+    else:
+        # CH19-27 Agent: 接受 client/model 参数
+        from openai import OpenAI
+        provider_name = config.get_provider(defaults.model)
+        api_key = config.get_api_key(provider_name)
+        prov_cfg = getattr(config.providers, provider_name, None)
+        api_base = prov_cfg.api_base if prov_cfg else None
+        client = OpenAI(api_key=api_key, base_url=api_base)
+        agent = Agent(
+            client=client,
+            model=defaults.model,
+            tool_registry=tool_registry,
+            sessions=session_manager,
+            context_window=defaults.context_window_tokens,
+            max_iterations=defaults.max_tool_iterations,
+        )
 
     return provider_manager, session_manager, tool_registry, security_guard, agent
 
@@ -307,12 +340,17 @@ def create_app(config_path: str | Path | None = None) -> FastAPI:
                     })
 
                 try:
-                    full_response = await _agent.run(
+                    import inspect
+                    _run_params = inspect.signature(_agent.run).parameters
+                    run_kwargs: dict[str, Any] = dict(
                         user_message=content,
                         session_key=session_key,
-                        on_content_delta=_on_content_delta,
-                        on_tool_hint=_on_tool_hint,
                     )
+                    if "on_content_delta" in _run_params:
+                        run_kwargs["on_content_delta"] = _on_content_delta
+                    if "on_tool_hint" in _run_params:
+                        run_kwargs["on_tool_hint"] = _on_tool_hint
+                    full_response = await _agent.run(**run_kwargs)
                     await websocket.send_json({
                         "type": "content_done", "content": full_response,
                     })

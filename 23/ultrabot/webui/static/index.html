@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UltraBot Web UI</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
+header { background: #16213e; padding: 12px 20px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #0f3460; }
+header h1 { font-size: 18px; color: #e94560; }
+header .status { font-size: 12px; color: #888; margin-left: auto; }
+header .status.connected { color: #4caf50; }
+#messages { flex: 1; overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+.msg { max-width: 80%; padding: 10px 14px; border-radius: 12px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; font-size: 14px; }
+.msg.user { align-self: flex-end; background: #0f3460; color: #fff; border-bottom-right-radius: 4px; }
+.msg.assistant { align-self: flex-start; background: #16213e; color: #e0e0e0; border-bottom-left-radius: 4px; border: 1px solid #0f3460; }
+.msg.assistant .tool-hint { color: #e94560; font-size: 12px; font-style: italic; }
+.msg.error { align-self: center; background: #4a1526; color: #e94560; font-size: 13px; }
+.msg.system { align-self: center; color: #888; font-size: 12px; background: none; }
+#input-area { background: #16213e; padding: 12px 20px; display: flex; gap: 10px; border-top: 1px solid #0f3460; }
+#input-area textarea { flex: 1; background: #1a1a2e; color: #e0e0e0; border: 1px solid #0f3460; border-radius: 8px; padding: 10px; font-size: 14px; resize: none; outline: none; font-family: inherit; min-height: 44px; max-height: 120px; }
+#input-area textarea:focus { border-color: #e94560; }
+#input-area button { background: #e94560; color: #fff; border: none; border-radius: 8px; padding: 0 20px; font-size: 14px; cursor: pointer; white-space: nowrap; }
+#input-area button:hover { background: #c73a54; }
+#input-area button:disabled { background: #555; cursor: not-allowed; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>UltraBot</h1>
+  <span class="status" id="status">Connecting...</span>
+</header>
+
+<div id="messages"></div>
+
+<div id="input-area">
+  <textarea id="input" rows="1" placeholder="Type a message... (Enter to send, Shift+Enter for newline)"></textarea>
+  <button id="send-btn" onclick="sendMessage()">Send</button>
+</div>
+
+<script>
+const messagesEl = document.getElementById('messages');
+const inputEl = document.getElementById('input');
+const statusEl = document.getElementById('status');
+const sendBtn = document.getElementById('send-btn');
+
+let ws = null;
+let currentAssistantEl = null;
+const sessionKey = 'web:' + (Date.now().toString(36));
+
+function addMessage(role, text) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.textContent = text;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return div;
+}
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/ws/chat');
+
+  ws.onopen = () => {
+    statusEl.textContent = 'Connected';
+    statusEl.className = 'status connected';
+    sendBtn.disabled = false;
+  };
+
+  ws.onclose = () => {
+    statusEl.textContent = 'Disconnected - reconnecting...';
+    statusEl.className = 'status';
+    sendBtn.disabled = true;
+    setTimeout(connect, 2000);
+  };
+
+  ws.onerror = () => { ws.close(); };
+
+  ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+
+    if (data.type === 'content_delta') {
+      if (!currentAssistantEl) {
+        currentAssistantEl = addMessage('assistant', '');
+      }
+      currentAssistantEl.textContent += data.content;
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    } else if (data.type === 'tool_start') {
+      if (!currentAssistantEl) {
+        currentAssistantEl = addMessage('assistant', '');
+      }
+      const hint = document.createElement('div');
+      hint.className = 'tool-hint';
+      hint.textContent = '[calling ' + data.tool_name + '...]';
+      currentAssistantEl.appendChild(hint);
+    } else if (data.type === 'content_done') {
+      if (currentAssistantEl) {
+        // Replace with final content in case streaming was partial
+        if (data.content) {
+          currentAssistantEl.textContent = data.content;
+        }
+      } else {
+        addMessage('assistant', data.content || '(empty response)');
+      }
+      currentAssistantEl = null;
+      sendBtn.disabled = false;
+    } else if (data.type === 'error') {
+      addMessage('error', data.message);
+      currentAssistantEl = null;
+      sendBtn.disabled = false;
+    }
+  };
+}
+
+function sendMessage() {
+  const text = inputEl.value.trim();
+  if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+  addMessage('user', text);
+  ws.send(JSON.stringify({ type: 'message', content: text, session_key: sessionKey }));
+  inputEl.value = '';
+  inputEl.style.height = 'auto';
+  sendBtn.disabled = true;
+  currentAssistantEl = null;
+}
+
+inputEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+inputEl.addEventListener('input', () => {
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+});
+
+addMessage('system', 'Session: ' + sessionKey);
+connect();
+</script>
+</body>
+</html>
